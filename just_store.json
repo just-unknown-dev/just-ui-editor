@@ -1,0 +1,36 @@
+{
+  "category": "kits",
+  "dependencies": {
+    "just_game_engine_editor": "^0.1.0"
+  },
+  "editor": {
+    "editorOnlyLibraries": [
+      "editor.dart",
+      "src/editor/"
+    ],
+    "modules": [
+      {
+        "class": "UiEditorModule",
+        "library": "package:just_ui_editor/editor.dart",
+        "order": 40
+      }
+    ]
+  },
+  "id": "just_ui_editor",
+  "kind": "kit",
+  "name": "Interface",
+  "requires": {
+    "just_game_engine": "^2.0.0"
+  },
+  "runtime": {
+    "extensions": [
+      {
+        "const": "JustGameUi.extension",
+        "library": "package:just_ui_editor/just_ui_editor.dart",
+        "order": 20
+      }
+    ]
+  },
+  "schema": 1,
+  "version": "0.1.0"
+}

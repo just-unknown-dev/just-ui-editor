@@ -13,7 +13,7 @@ dependencies:
   flutter:
     sdk: flutter
   just_game_engine: ^2.0.0
-  just_inputs: ^0.0.1
+  just_inputs: ^0.1.0
   just_signals: ^1.0.2
 
   # Design-time only. `lib/just_ui_editor.dart` — what a game imports —
