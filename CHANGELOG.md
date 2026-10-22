@@ -2,6 +2,8 @@
 
 ## 0.1.0 (unreleased)
 
+- **Builds on `just_editor_core`**, the editor's module contract, instead of depending on `just_game_engine_editor`: the module's code needs nothing else of the editor. The tests that drive a real editor take `just_game_engine_editor` as a dev dependency.
+
 - **Hot reload reaches the interface's components.** `JustGameUi.extension` is a `RefreshableExtension`: after a hot reload the editor puts `UiDefinitions` and `UiSchemas` in place again from the code as it now is, so a field added to one shows in the inspector without a restart. Both are getters now rather than `static final`s, which a reload never rebuilds.
 
 - **Ready for 3-D.** `UiPointer` carries the camera's `ray` when the camera is in space (not a plain 2-D one): a world-space button is then hit where the ray crosses its own depth. A 2-D pointer is unchanged. Screens open their scene with the engine 2.0 `openScene(scene, rootOrder:)`.

@@ -8,7 +8,7 @@ library;
 import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
-import 'package:just_game_engine_editor/just_game_engine_editor.dart'
+import 'package:just_editor_core/just_editor_core.dart'
     show SmartSnap, SnapGuide;
 
 import '../../runtime/components/screen/ui_slot_component.dart';

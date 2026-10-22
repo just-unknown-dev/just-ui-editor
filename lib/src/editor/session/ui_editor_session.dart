@@ -3,7 +3,7 @@ library;
 
 import 'package:flutter/widgets.dart';
 import 'package:just_game_engine/just_game_engine.dart';
-import 'package:just_game_engine_editor/just_game_engine_editor.dart';
+import 'package:just_editor_core/just_editor_core.dart';
 import 'package:just_signals/just_signals.dart';
 
 import '../../runtime/components/screen/ui_canvas_component.dart';

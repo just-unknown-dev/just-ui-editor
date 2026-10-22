@@ -196,6 +196,7 @@ void main() {
 
     setUp(() {
       scope = EditorScope(
+        builtIns: const [BuiltInEditorModule.new],
         world: _uiWorld()..initialize(),
         modules: [UiEditorModule()],
       );

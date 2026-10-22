@@ -5,7 +5,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:just_game_engine/just_game_engine.dart';
-import 'package:just_game_engine_editor/just_game_engine_editor.dart';
+import 'package:just_editor_core/just_editor_core.dart';
 
 import '../../runtime/components/screen/ui_slot_component.dart';
 import '../session/ui_editor_session.dart';

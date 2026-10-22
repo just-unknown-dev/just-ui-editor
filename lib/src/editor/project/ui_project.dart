@@ -5,7 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
-import 'package:just_game_engine_editor/just_game_engine_editor.dart'
+import 'package:just_editor_core/just_editor_core.dart'
     show PackageAssetPaths;
 
 import '../../runtime/screens/ui_document.dart';

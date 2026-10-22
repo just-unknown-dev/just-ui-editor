@@ -7,7 +7,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:just_game_engine/just_game_engine.dart';
-import 'package:just_game_engine_editor/just_game_engine_editor.dart';
+import 'package:just_editor_core/just_editor_core.dart';
 
 import '../runtime/components/button_component.dart';
 import '../runtime/components/screen/ui_canvas_component.dart';
@@ -200,7 +200,7 @@ class UiEditorModule extends EditorModule {
       name: 'Text',
       category: 'Shapes',
       icon: Icons.text_fields,
-      color: BuiltInPrefabs.shapeColor,
+      color: PrefabColours.shape,
       placement: PrefabPlacement.point,
       defaultSize: const Size(160, 32),
       description: 'Words in the level — which can read the game.',

@@ -1,7 +1,7 @@
 /// One theme open in the interface editor's Theme tab.
 library;
 
-import 'package:just_game_engine_editor/just_game_engine_editor.dart';
+import 'package:just_editor_core/just_editor_core.dart';
 import 'package:just_signals/just_signals.dart';
 
 import '../../runtime/theme/ui_theme.dart';
