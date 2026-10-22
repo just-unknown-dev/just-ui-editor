@@ -198,7 +198,7 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
   KeyEventResult _onKey(KeyEvent event) {
     if (event is KeyUpEvent) return KeyEventResult.ignored;
     final keys = HardwareKeyboard.instance;
-    final ctrl = keys.isControlPressed || keys.isMetaPressed;
+    final ctrl = EditorKeys.primaryPressed;
     final shift = keys.isShiftPressed;
     final key = event.logicalKey;
     final doc = session.document.value;
@@ -238,6 +238,9 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
       }
       return KeyEventResult.handled;
     }
+    // The modifier no shortcut is made with (Ctrl on a Mac): none of the
+    // plain keys either.
+    if (EditorKeys.otherPressed) return KeyEventResult.ignored;
 
     switch (key) {
       case LogicalKeyboardKey.escape:

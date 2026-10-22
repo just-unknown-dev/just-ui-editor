@@ -15,8 +15,8 @@ import '../document/ui_screen_document.dart';
 import '../session/ui_edit_ops.dart';
 import '../session/ui_editor_session.dart';
 
-/// The screen's elements as a tree. Click selects at once (Shift or Ctrl
-/// adds), a double click renames, the eye shows or hides — saved — and a
+/// The screen's elements as a tree. Click selects at once (Shift, or Ctrl —
+/// Cmd on macOS — adds), a double click renames, the eye shows or hides — saved — and a
 /// hold drags a row to another place or into another container.
 class UiHierarchyPanel extends StatefulWidget {
   const UiHierarchyPanel({super.key, required this.session});
@@ -211,7 +211,7 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
     if (e.buttons != kPrimaryButton) return;
     final state = doc.sceneState;
     final keys = HardwareKeyboard.instance;
-    if (keys.isShiftPressed || keys.isControlPressed) {
+    if (keys.isShiftPressed || EditorKeys.primaryPressed) {
       state.toggleMultiSelect(entity);
       return;
     }
@@ -266,15 +266,20 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
           'cut',
           'Cut',
           icon: Icons.content_cut,
-          shortcut: 'Ctrl+X',
+          shortcut: EditorKeys.withPrimary('X'),
         ),
-        editorMenuItem('copy', 'Copy', icon: Icons.copy, shortcut: 'Ctrl+C'),
+        editorMenuItem(
+          'copy',
+          'Copy',
+          icon: Icons.copy,
+          shortcut: EditorKeys.withPrimary('C'),
+        ),
       ],
       editorMenuItem(
         'paste',
         'Paste',
         icon: Icons.content_paste,
-        shortcut: 'Ctrl+V',
+        shortcut: EditorKeys.withPrimary('V'),
         enabled: UiEditOps.clipboard != null,
       ),
       if (!isCanvas) ...[
@@ -282,7 +287,7 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
           'duplicate',
           'Duplicate',
           icon: Icons.control_point_duplicate,
-          shortcut: 'Ctrl+D',
+          shortcut: EditorKeys.withPrimary('D'),
         ),
         editorMenuItem(
           'delete',

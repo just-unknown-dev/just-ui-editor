@@ -90,21 +90,21 @@ class UiCanvasToolbar extends StatelessWidget {
             EditorIconButton(
               icon: Icons.remove_rounded,
               tooltip: 'Zoom out',
-              shortcut: 'Ctrl+-',
+              shortcut: EditorKeys.withPrimary('-'),
               onTap: () => session.zoomStep(-1),
             ),
             _ZoomButton(session: session),
             EditorIconButton(
               icon: Icons.add_rounded,
               tooltip: 'Zoom in',
-              shortcut: 'Ctrl+=',
+              shortcut: EditorKeys.withPrimary('='),
               onTap: () => session.zoomStep(1),
             ),
             const SizedBox(width: 2),
             EditorIconButton(
               icon: Icons.fit_screen_rounded,
               tooltip: 'Fit',
-              shortcut: 'Ctrl+0',
+              shortcut: EditorKeys.withPrimary('0'),
               isActive: session.zoom.value == 0,
               onTap: session.zoomToFit,
             ),
@@ -119,7 +119,8 @@ class UiCanvasToolbar extends StatelessWidget {
                     EditorIconButton(
                       icon: Icons.near_me_rounded,
                       tooltip:
-                          'Snap to edges, centres and guides — hold Ctrl '
+                          'Snap to edges, centres and guides — hold '
+                          '${EditorKeys.primaryLabel} '
                           'while dragging to place freely',
                       isActive: session.snap.value,
                       onTap: () => session.snap.value = !session.snap.value,
@@ -278,12 +279,12 @@ class _ZoomButton extends StatelessWidget {
             ? Offset.zero
             : box.localToGlobal(box.size.bottomLeft(Offset.zero));
         final chosen = await showEditorMenu<double>(context, at, [
-          editorMenuItem(0, 'Fit', shortcut: 'Ctrl+0'),
+          editorMenuItem(0, 'Fit', shortcut: EditorKeys.withPrimary('0')),
           for (final z in const [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0])
             editorMenuItem(
               z,
               '${(z * 100).round()}%',
-              shortcut: z == 1 ? 'Ctrl+1' : null,
+              shortcut: z == 1 ? EditorKeys.withPrimary('1') : null,
             ),
         ]);
         if (chosen == null) return;

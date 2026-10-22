@@ -466,8 +466,7 @@ class UiCanvasViewState extends State<UiCanvasView>
 
   // ── Pointer ────────────────────────────────────────────────────────────
 
-  bool get _snapping =>
-      session.snap.value && !HardwareKeyboard.instance.isControlPressed;
+  bool get _snapping => session.snap.value && !EditorKeys.primaryPressed;
 
   /// How near counts as lined up, in design pixels: the same few pixels on
   /// screen whatever the zoom.
@@ -539,8 +538,7 @@ class UiCanvasViewState extends State<UiCanvasView>
           : doc.world.getEntity(parentId) ?? picked;
     }
     final additive =
-        HardwareKeyboard.instance.isShiftPressed ||
-        HardwareKeyboard.instance.isControlPressed;
+        HardwareKeyboard.instance.isShiftPressed || EditorKeys.primaryPressed;
     if (picked == null || picked.id == doc.canvas.id) {
       if (!additive) state.clearSelection();
       _drag = _Drag(_DragKind.marquee, p);
@@ -869,7 +867,7 @@ class UiCanvasViewState extends State<UiCanvasView>
 
   void _signal(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
-    if (HardwareKeyboard.instance.isControlPressed) {
+    if (EditorKeys.primaryPressed) {
       final factor = math.pow(0.9985, e.scrollDelta.dy).toDouble();
       _zoomAt(e.localPosition, session.currentZoom * factor);
       return;
@@ -961,28 +959,28 @@ class UiCanvasViewState extends State<UiCanvasView>
         'cut',
         'Cut',
         icon: Icons.content_cut,
-        shortcut: 'Ctrl+X',
+        shortcut: EditorKeys.withPrimary('X'),
         enabled: editable,
       ),
       editorMenuItem(
         'copy',
         'Copy',
         icon: Icons.copy,
-        shortcut: 'Ctrl+C',
+        shortcut: EditorKeys.withPrimary('C'),
         enabled: editable,
       ),
       editorMenuItem(
         'paste',
         'Paste',
         icon: Icons.content_paste,
-        shortcut: 'Ctrl+V',
+        shortcut: EditorKeys.withPrimary('V'),
         enabled: UiEditOps.clipboard != null,
       ),
       editorMenuItem(
         'duplicate',
         'Duplicate',
         icon: Icons.control_point_duplicate,
-        shortcut: 'Ctrl+D',
+        shortcut: EditorKeys.withPrimary('D'),
         enabled: editable,
       ),
       editorMenuItem(

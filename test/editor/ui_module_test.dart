@@ -93,9 +93,9 @@ void main() {
     });
 
     test('its files are data, never taken for sprite atlases', () {
-      scopeOver(_uiWorld()..initialize());
+      final scope = scopeOver(_uiWorld()..initialize());
       expect(
-        ModuleDataFiles.suffixes,
+        scope.dataFileSuffixes,
         containsAll(['.ui.json', '/screens.json', '.uitheme.json']),
       );
     });

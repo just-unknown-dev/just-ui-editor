@@ -569,6 +569,7 @@ extension UiEditOps on UiEditorSession {
         before: slot.visible,
         after: visible,
         sceneState: doc.sceneState,
+        entity: entity,
       ),
     );
   }

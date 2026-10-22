@@ -28,8 +28,8 @@ import 'workspace/ui_workspace.dart';
 /// Adds the Interface editor to the engine editor:
 ///
 /// - a workspace for the game's screens (`.ui.json`) and themes
-///   (`.uitheme.json`), from the toolbar, from Ctrl+Shift+U, or by opening
-///   one of those files in the Assets dock;
+///   (`.uitheme.json`), from the toolbar, from Ctrl+Shift+U (Cmd+Shift+U on
+///   macOS), or by opening one of those files in the Assets dock;
 /// - the inspector rows for text styles, actions, anchors and theme roles,
 ///   which world-space text and buttons in a level use too;
 /// - the Problems dock's checks of every screen;
@@ -92,7 +92,7 @@ class UiEditorModule extends EditorModule {
     ToolbarButton(
       id: 'ui.open',
       icon: Icons.web_asset_rounded,
-      tooltip: "Interface — the game's screens (Ctrl+Shift+U)",
+      tooltip: "Interface — the game's screens (${_openKey.shortcut})",
       order: 102,
       onPressed: (scope) => scope.openWorkspace(workspaceId),
       isActive: (scope) =>
@@ -153,10 +153,16 @@ class UiEditorModule extends EditorModule {
     return moved;
   }
 
+  /// Opens the editor: Ctrl+Shift+U, Cmd+Shift+U on macOS.
+  static const _openKey = KeyBinding(
+    LogicalKeyboardKey.keyU,
+    'ui.open',
+    control: true,
+    shift: true,
+  );
+
   @override
-  List<KeyBinding> get keyBindings => const [
-    KeyBinding(LogicalKeyboardKey.keyU, 'ui.open', control: true, shift: true),
-  ];
+  List<KeyBinding> get keyBindings => const [_openKey];
 
   @override
   List<AssetAction> get assetActions => [

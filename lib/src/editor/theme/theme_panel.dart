@@ -175,6 +175,7 @@ class _UiThemePanelState extends State<UiThemePanel> {
         before: settings.theme,
         after: path,
         sceneState: screen.sceneState,
+        entity: canvas,
       ),
     );
   }
