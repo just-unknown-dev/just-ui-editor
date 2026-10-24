@@ -1,8 +1,10 @@
 {
-  "category": "kits",
-  "dependencies": {
-    "just_game_engine_editor": "^0.1.0-dev.1"
+  "author": {
+    "name": "Just Unknown",
+    "url": "https://justunknown.com"
   },
+  "category": "editors",
+  "description": "Screens are .ui.json assets drawn as real Flutter widgets, with world-space text and buttons, themes, bindings and actions, and the editor that builds them.",
   "editor": {
     "editorOnlyLibraries": [
       "editor.dart",
@@ -17,10 +19,18 @@
     ]
   },
   "id": "just_ui_editor",
-  "kind": "kit",
+  "kind": "editor",
+  "license": {
+    "file": "LICENSE",
+    "spdx": "BSD-3-Clause"
+  },
   "name": "Interface",
+  "previews": [
+    "store/card.png"
+  ],
   "requires": {
-    "just_game_engine": "^2.0.0"
+    "just_game_engine": "^2.0.0",
+    "just_game_engine_editor": "^0.1.0-dev.1"
   },
   "runtime": {
     "extensions": [
@@ -32,5 +42,13 @@
     ]
   },
   "schema": 1,
+  "stage": "experimental",
+  "summary": "In-game screens and HUDs, drawn as real Flutter widgets.",
+  "tags": [
+    "ui",
+    "hud",
+    "menus",
+    "flutter"
+  ],
   "version": "0.1.0"
 }

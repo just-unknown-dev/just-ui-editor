@@ -68,7 +68,7 @@ flutter pub get
 flutter test
 ```
 
-If you're working from the Just engine monorepo, run every command from `packages/just_ui_editor`.
+If you're working from the Just engine monorepo, run every command from `plugins/just_ui_editor`.
 
 ---
 
