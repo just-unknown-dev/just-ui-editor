@@ -1,6 +1,6 @@
 name: just_ui_editor
 description: "In-game interface for just_game_engine — screens saved as .ui.json assets and drawn as real Flutter widgets, world-space text and buttons, themes, bindings and actions — and the editor that builds them."
-version: 0.1.0
+version: 0.1.0-dev.1
 homepage: https://github.com/just-unknown-dev/just-ui-editor
 repository: https://github.com/just-unknown-dev/just-ui-editor
 issue_tracker: https://github.com/just-unknown-dev/just-ui-editor/issues
@@ -14,7 +14,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  just_game_engine: ^2.0.0
+  just_game_engine: ^2.0.0-dev.2
   just_inputs: ^0.1.0
   just_signals: ^1.0.2
 
