@@ -32,14 +32,38 @@ class UiInsertMark {
   final Offset to;
 }
 
+/// What the canvas shows over the screen that follows the pointer — the
+/// element under it, a marquee, where a dragged child would land, a size
+/// while dragging. Read when painting, and told of a change with
+/// [changed], so a hover repaints the overlay and rebuilds nothing.
+class UiCanvasOverlay extends ChangeNotifier {
+  /// The pointer, in view pixels, or null when it is elsewhere.
+  Offset? pointer;
+
+  /// What is under the pointer, outlined lightly.
+  Entity? hovered;
+
+  /// A marquee being dragged out, in view pixels.
+  Rect? marquee;
+
+  /// Where a flow child being dragged would land.
+  UiInsertMark? insertMark;
+
+  /// Size and place while a drag lasts: "240 × 52".
+  String? dragLabel;
+
+  /// Whether a drag is going on: nothing is outlined as hovered then.
+  bool dragging = false;
+
+  /// Repaints whatever shows these.
+  void changed() => notifyListeners();
+}
+
 /// The overlay, painted in view pixels.
 class UiCanvasPainter extends CustomPainter {
   UiCanvasPainter({
     required this.session,
-    required this.hovered,
-    required this.marquee,
-    required this.insertMark,
-    required this.dragLabel,
+    required this.overlay,
     super.repaint,
   });
 
@@ -52,12 +76,14 @@ class UiCanvasPainter extends CustomPainter {
 
   /// What is selected, read when painting, like [metrics].
   List<Entity> get selected => session.selection;
-  final Entity? hovered;
-  final Rect? marquee;
-  final UiInsertMark? insertMark;
 
-  /// Size and place while a drag lasts: "240 × 52".
-  final String? dragLabel;
+  /// What follows the pointer, read when painting.
+  final UiCanvasOverlay overlay;
+
+  Entity? get hovered => overlay.dragging ? null : overlay.hovered;
+  Rect? get marquee => overlay.marquee;
+  UiInsertMark? get insertMark => overlay.insertMark;
+  String? get dragLabel => overlay.dragLabel;
 
   /// How big a handle is on screen, whatever the zoom.
   static const double handleSize = 8;

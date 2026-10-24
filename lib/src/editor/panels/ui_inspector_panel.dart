@@ -15,7 +15,7 @@ import '../session/ui_editor_session.dart';
 /// The selected element's components — every field an undo step in the
 /// screen's own history, never the level's. With nothing selected, the
 /// screen's own settings; with several, how to line them up.
-class UiInspectorPanel extends StatelessWidget {
+class UiInspectorPanel extends StatefulWidget {
   const UiInspectorPanel({
     super.key,
     required this.session,
@@ -26,22 +26,38 @@ class UiInspectorPanel extends StatelessWidget {
   final EditorScope scope;
 
   @override
+  State<UiInspectorPanel> createState() => _UiInspectorPanelState();
+}
+
+class _UiInspectorPanelState extends State<UiInspectorPanel> {
+  UiEditorSession get session => widget.session;
+  EditorScope get scope => widget.scope;
+
+  /// What was last shown. A drag on the canvas changes a slot on every
+  /// move; while it lasts this is shown as it was, and every card catches
+  /// up once when it ends — not once a pointer move.
+  Widget? _shown;
+
+  @override
   Widget build(BuildContext context) {
     return SignalBuilder<UiScreenDocument?>(
       signal: session.document,
       builder: (context, doc, _) {
-        if (doc == null) return const SizedBox.shrink();
+        if (doc == null) return _shown = const SizedBox.shrink();
         return SignalConsumer(
           signals: [
             doc.sceneState.selectedEntity,
             doc.sceneState.multiSelectedIds,
             doc.sceneState.revision,
+            session.dragging,
           ],
           builder: (context, _) {
+            final shown = _shown;
+            if (session.dragging.value && shown != null) return shown;
             final picked = session.selection;
-            if (picked.length > 1) return _several(picked.length);
+            if (picked.length > 1) return _shown = _several(picked.length);
             final entity = picked.firstOrNull ?? doc.canvas;
-            return _one(doc, entity);
+            return _shown = _one(doc, entity);
           },
         );
       },
@@ -70,7 +86,17 @@ class UiInspectorPanel extends StatelessWidget {
           subtitle: isCanvas
               ? 'The screen — its name is how the game opens it'
               : null,
-          onRename: (name) => session.rename(entity, name),
+          onRename: (name) {
+            if (isCanvas) {
+              return session.renameScreen(doc.path, name)
+                  ? null
+                  : session.lastError;
+            }
+            if (name.trim().isEmpty) return 'A name is needed.';
+            return session.rename(entity, name)
+                ? null
+                : 'Something else on this screen is called ${name.trim()}.';
+          },
         ),
         const SizedBox(height: 8),
         if (slot != null && slot.mode == UiSlotMode.anchored) ...[
@@ -156,7 +182,7 @@ class UiInspectorPanel extends StatelessWidget {
   );
 }
 
-class _Title extends StatelessWidget {
+class _Title extends StatefulWidget {
   const _Title({
     required this.icon,
     required this.name,
@@ -167,7 +193,39 @@ class _Title extends StatelessWidget {
   final IconData icon;
   final String name;
   final String? subtitle;
-  final bool Function(String name) onRename;
+
+  /// Renames; why it could not, or null when it did.
+  final String? Function(String name) onRename;
+
+  @override
+  State<_Title> createState() => _TitleState();
+}
+
+class _TitleState extends State<_Title> {
+  /// Why the last name typed was refused — shown until another is.
+  String? _refused;
+
+  /// Bumped on a refusal, so the box goes back to the name it has.
+  int _attempt = 0;
+
+  @override
+  void didUpdateWidget(_Title old) {
+    super.didUpdateWidget(old);
+    if (old.name != widget.name) _refused = null;
+  }
+
+  void _commit(String value) {
+    if (value.trim() == widget.name) {
+      if (_refused != null) setState(() => _refused = null);
+      return;
+    }
+    final problem = widget.onRename(value);
+    if (!mounted) return;
+    setState(() {
+      _refused = problem;
+      if (problem != null) _attempt++;
+    });
+  }
 
   @override
   Widget build(BuildContext context) => Column(
@@ -176,27 +234,36 @@ class _Title extends StatelessWidget {
       Row(
         children: [
           Icon(
-            icon,
+            widget.icon,
             size: EditorMetrics.iconMd,
             color: EditorTheme.primaryMuted,
           ),
           const SizedBox(width: 6),
           Expanded(
             child: CommitTextField(
-              key: ValueKey(name),
-              value: name,
-              onCommit: (value) {
-                if (value.trim() != name) onRename(value);
-              },
+              key: ValueKey((widget.name, _attempt)),
+              value: widget.name,
+              onCommit: _commit,
             ),
           ),
         ],
       ),
-      if (subtitle != null)
+      if (_refused case final refused?)
         Padding(
           padding: const EdgeInsets.only(top: 4, left: 20),
           child: Text(
-            subtitle!,
+            refused,
+            style: TextStyle(
+              color: EditorTheme.error,
+              fontSize: EditorMetrics.fontCaption,
+            ),
+          ),
+        ),
+      if (widget.subtitle case final subtitle?)
+        Padding(
+          padding: const EdgeInsets.only(top: 4, left: 20),
+          child: Text(
+            subtitle,
             style: TextStyle(
               color: EditorTheme.textMuted,
               fontSize: EditorMetrics.fontCaption,

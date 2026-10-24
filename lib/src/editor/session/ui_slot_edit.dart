@@ -76,15 +76,19 @@ class UiSlotState {
 
 /// Sets the slots of one or more elements, all at once.
 ///
-/// A drag pushes one of these per pointer move; consecutive ones for the
-/// same elements with the same label merge, so a drag is one step — and
-/// the history's `breakMerge` at the start of each drag keeps two drags
-/// two steps.
+/// Keyed by entity, and the slot written is the one that entity has *when
+/// the command runs*: an undone delete, or a create undone and redone,
+/// makes the element again with a slot of its own, and a move recorded
+/// before that still reaches it (see `EditorSceneState.liveEntity`).
+///
+/// A drag records one of these when it ends (`EditorHistory.pushApplied`);
+/// arrow-key nudges push one per press, and consecutive ones for the same
+/// elements with the same label merge.
 class UiSlotEditCommand extends EditorCommand {
   UiSlotEditCommand({
     required this.label,
     required this.sceneState,
-    required Map<UiSlotComponent, (UiSlotState, UiSlotState)> changes,
+    required Map<Entity, (UiSlotState, UiSlotState)> changes,
   }) : _changes = Map.of(changes);
 
   @override
@@ -92,17 +96,21 @@ class UiSlotEditCommand extends EditorCommand {
 
   final EditorSceneState sceneState;
 
-  final Map<UiSlotComponent, (UiSlotState, UiSlotState)> _changes;
+  final Map<Entity, (UiSlotState, UiSlotState)> _changes;
 
   /// Whether this changes anything at all — a click that moved nothing is
   /// not pushed.
   bool get changesSomething =>
       _changes.values.any((change) => change.$1 != change.$2);
 
-  @override
-  void redo() {
+  /// The slot [entity] has now, as it was rebuilt if it was.
+  UiSlotComponent? _slotOf(Entity entity) =>
+      sceneState.liveEntity(entity)?.getComponent<UiSlotComponent>();
+
+  void _apply(UiSlotState Function((UiSlotState, UiSlotState) change) pick) {
     for (final entry in _changes.entries) {
-      entry.value.$2.applyTo(entry.key);
+      final slot = _slotOf(entry.key);
+      if (slot != null) pick(entry.value).applyTo(slot);
     }
     sceneState
       ..markDirty()
@@ -110,39 +118,40 @@ class UiSlotEditCommand extends EditorCommand {
   }
 
   @override
-  void undo() {
-    for (final entry in _changes.entries) {
-      entry.value.$1.applyTo(entry.key);
-    }
-    sceneState
-      ..markDirty()
-      ..refresh();
-  }
+  void redo() => _apply((change) => change.$2);
+
+  @override
+  void undo() => _apply((change) => change.$1);
+
+  /// The ids of what this moves, as each is now.
+  Set<EntityId> get _ids => {
+    for (final e in _changes.keys) sceneState.liveEntity(e)?.id ?? e.id,
+  };
 
   @override
   bool mergeWith(EditorCommand next) {
     if (next is! UiSlotEditCommand || next.label != label) return false;
-    if (next._changes.keys
-            .toSet()
-            .difference(_changes.keys.toSet())
-            .isNotEmpty ||
-        _changes.length != next._changes.length) {
+    final mine = _ids;
+    final theirs = next._ids;
+    if (mine.length != theirs.length || !mine.containsAll(theirs)) {
       return false;
     }
+    final byId = {
+      for (final e in _changes.keys) sceneState.liveEntity(e)?.id ?? e.id: e,
+    };
     for (final entry in next._changes.entries) {
-      final mine = _changes[entry.key]!;
-      _changes[entry.key] = (mine.$1, entry.value.$2);
+      final id = sceneState.liveEntity(entry.key)?.id ?? entry.key.id;
+      final key = byId[id]!;
+      _changes[key] = (_changes[key]!.$1, entry.value.$2);
     }
     return true;
   }
 }
 
-/// The slots of [entities], or none for an entity with no slot.
-Map<UiSlotComponent, UiSlotState> slotsOf(Iterable<Entity> entities) {
-  final out = <UiSlotComponent, UiSlotState>{};
-  for (final e in entities) {
-    final slot = e.getComponent<UiSlotComponent>();
-    if (slot != null) out[slot] = UiSlotState.of(slot);
-  }
-  return out;
-}
+/// The slots of [entities] as they are now, by entity; an entity with no
+/// slot is left out.
+Map<Entity, UiSlotState> slotsOf(Iterable<Entity> entities) => {
+  for (final e in entities)
+    if (e.getComponent<UiSlotComponent>() case final slot?)
+      e: UiSlotState.of(slot),
+};

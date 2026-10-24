@@ -153,5 +153,57 @@ void main() {
       screen.history.undo();
       expect(screen.settings!.theme, isEmpty);
     });
+
+    testWidgets('two presses are two steps, though they change one thing', (
+      tester,
+    ) async {
+      await pumpPanel(tester);
+      final doc = session.theme.value!;
+      Future<void> press() async {
+        await tester.tap(find.text('COLOURS'));
+        await tester.pump();
+      }
+
+      await press();
+      doc.change(doc.theme.value.copyWith(radius: 12), 'Corner');
+      doc.change(doc.theme.value.copyWith(radius: 14), 'Corner');
+      await press();
+      doc.change(doc.theme.value.copyWith(radius: 16), 'Corner');
+
+      expect(doc.history.undoDepth, 2, reason: 'one per press');
+      doc.history.undo();
+      expect(doc.theme.value.radius, 14);
+    });
+  });
+
+  group('unsaved edits let go of', () {
+    test('are not what the screens go on drawing with', () async {
+      writeTheme(UiTheme.fallback.copyWith(name: 'default', radius: 10));
+      UiThemes.loader = UiProject(dir.path).loadTheme;
+      expect((await UiThemes.load(themePath)).radius, 10);
+      session.openTheme(themePath);
+      final doc = session.theme.value!;
+      doc.change(doc.theme.value.copyWith(radius: 30), 'Corner');
+      expect(UiThemes.cached(themePath)!.radius, 30, reason: 'shown at once');
+
+      // Discarded: the Theme tab let go of with the change unsaved.
+      session.openTheme(themePath);
+      await Future<void>.delayed(Duration.zero);
+
+      expect((await UiThemes.load(themePath)).radius, 10);
+    });
+
+    test('but saved ones are kept', () async {
+      writeTheme(UiTheme.fallback.copyWith(name: 'default', radius: 10));
+      UiThemes.loader = UiProject(dir.path).loadTheme;
+      session.openTheme(themePath);
+      final doc = session.theme.value!;
+      doc.change(doc.theme.value.copyWith(radius: 30), 'Corner');
+      expect(session.saveTheme(), isTrue);
+
+      session.openTheme(themePath);
+
+      expect(UiThemes.cached(themePath)!.radius, 30);
+    });
   });
 }

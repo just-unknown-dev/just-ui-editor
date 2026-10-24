@@ -28,18 +28,28 @@ abstract final class UiFonts {
   ///
   /// Returns once it can be drawn with. Asking again is free, so a widget
   /// may call this in its build without thinking.
-  static Future<void> ensureLoaded(String family, List<String> paths) {
+  ///
+  /// [from] reads the files; [read] when null.
+  static Future<void> ensureLoaded(
+    String family,
+    List<String> paths, {
+    Future<ByteData> Function(String path)? from,
+  }) {
     if (family.isEmpty || paths.isEmpty || _loaded.contains(family)) {
       return Future.value();
     }
-    return _loading[family] ??= _load(family, paths);
+    return _loading[family] ??= _load(family, paths, from ?? read);
   }
 
-  static Future<void> _load(String family, List<String> paths) async {
+  static Future<void> _load(
+    String family,
+    List<String> paths,
+    Future<ByteData> Function(String path) from,
+  ) async {
     try {
       final loader = FontLoader(family);
       for (final path in paths) {
-        loader.addFont(read(path));
+        loader.addFont(from(path));
       }
       await loader.load();
       _loaded.add(family);
@@ -91,12 +101,43 @@ abstract final class UiFonts {
   }
 
   /// Loads every family under [paths] — what a game calls at boot with the
-  /// contents of its fonts folder.
-  static Future<void> loadAll(Iterable<String> paths) async {
+  /// contents of its fonts folder. [from] reads the files; [read] when null.
+  static Future<void> loadAll(
+    Iterable<String> paths, {
+    Future<ByteData> Function(String path)? from,
+  }) async {
     final families = familiesIn(paths);
     await Future.wait([
       for (final entry in families.entries)
-        ensureLoaded(entry.key, entry.value),
+        ensureLoaded(entry.key, entry.value, from: from),
     ]);
+  }
+
+  /// Where a game keeps the fonts its interface uses, unless it says
+  /// otherwise.
+  static const String defaultFolder = 'assets/fonts/';
+
+  /// Loads every font file the bundle holds under [folder] — what
+  /// `JustGameUi.install` does at boot, so the families the editor offers
+  /// from the project's `assets/fonts/` are the families the game draws.
+  ///
+  /// Reads the bundle's asset manifest; [bundle] is the app's when null. A
+  /// bundle with no manifest (a test, a tool) or no fonts there loads
+  /// nothing, and a file that will not load leaves its family to the
+  /// fallback. The folder must be listed under `flutter: assets:`.
+  static Future<void> loadFolder(String folder, {AssetBundle? bundle}) async {
+    final prefix = folder.endsWith('/') ? folder : '$folder/';
+    final List<String> assets;
+    try {
+      assets = (await AssetManifest.loadFromAssetBundle(
+        bundle ?? rootBundle,
+      )).listAssets();
+    } on Object {
+      return;
+    }
+    await loadAll([
+      for (final asset in assets)
+        if (asset.startsWith(prefix)) asset,
+    ], from: bundle?.load);
   }
 }

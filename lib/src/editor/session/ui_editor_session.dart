@@ -3,6 +3,7 @@ library;
 
 import 'package:flutter/widgets.dart';
 import 'package:just_game_engine/just_game_engine.dart';
+import 'package:just_editor_core/io.dart' show FileSystemException;
 import 'package:just_editor_core/just_editor_core.dart';
 import 'package:just_signals/just_signals.dart';
 
@@ -33,11 +34,13 @@ class UiGuide {
 
   Map<String, dynamic> toJson() => {'axis': vertical ? 'x' : 'y', 'at': at};
 
+  /// The guide [json] describes, or null when it is not one — a file
+  /// edited by hand is read as far as it makes sense, never thrown on.
   static UiGuide? fromJson(Object? json) {
     if (json is! Map) return null;
-    final at = (json['at'] as num?)?.toDouble();
-    if (at == null) return null;
-    return UiGuide(vertical: json['axis'] == 'x', at: at);
+    final at = json['at'];
+    if (at is! num || !at.isFinite) return null;
+    return UiGuide(vertical: json['axis'] == 'x', at: at.toDouble());
   }
 
   @override
@@ -54,10 +57,15 @@ class UiEditorSession {
   /// [context] is the edited engine's — the screens are built on it, so
   /// the game's own components read; null gives the session a context of
   /// its own. [codec] defaults to one over its definitions.
+  ///
+  /// [onFilesChanged] hears of every file the session writes, moves or
+  /// deletes — whatever shows them (the running game, the Assets dock)
+  /// reads them again.
   UiEditorSession({
     required this.project,
     SceneCodec? codec,
     EngineContext? context,
+    this.onFilesChanged,
   }) : context = context ?? EngineContext(),
        _ownsContext = context == null {
     this.context.install(JustGameUi.extension);
@@ -71,6 +79,20 @@ class UiEditorSession {
   /// What the screens are built on.
   final EngineContext context;
   final bool _ownsContext;
+
+  /// Told the project paths of the files written, moved or deleted.
+  final void Function(List<String> paths)? onFilesChanged;
+
+  void _changed(List<String> paths) => onFilesChanged?.call(paths);
+
+  /// Why the last thing asked of the session — opening, saving, renaming,
+  /// changing the screen list — did not happen, for the editor to say.
+  String? lastError;
+
+  bool _fail(String message) {
+    lastError = message;
+    return false;
+  }
 
   // ── Screens ────────────────────────────────────────────────────────────
 
@@ -86,6 +108,14 @@ class UiEditorSession {
     debugLabel: 'uiManifest',
   );
 
+  /// Why the game's screen list does not read, or null when it does (or is
+  /// not there yet). While it is set the list is never written: written
+  /// over, every screen it names would be lost.
+  final Signal<String?> manifestProblem = Signal(
+    null,
+    debugLabel: 'uiManifestProblem',
+  );
+
   /// Every screen file in the project, listed or not.
   final Signal<List<String>> files = Signal(const [], debugLabel: 'uiFiles');
 
@@ -94,6 +124,7 @@ class UiEditorSession {
   void refreshFiles() {
     _names = null;
     manifest.value = project.readManifest();
+    manifestProblem.value = project.manifestProblem();
     files.value = project.screenFiles();
   }
 
@@ -124,17 +155,25 @@ class UiEditorSession {
   UiScreenDocument? get _doc => document.value;
 
   /// Opens the screen at [path], closing the one before. False when it
-  /// could not be read.
+  /// could not be read; [lastError] then says why.
   bool open(String path) {
     final UiDocument read;
     try {
       read = project.readScreen(path);
-    } on Object {
-      return false;
+    } on Object catch (error) {
+      return _fail('$path does not read: ${_describe(error)}');
     }
     _replace(UiScreenDocument.open(path, read, codec: codec, context: context));
     return true;
   }
+
+  static String _describe(Object error) => switch (error) {
+    FormatException(:final message) => message,
+    FileSystemException(:final message, :final osError?) =>
+      '$message (${osError.message})',
+    FileSystemException(:final message) => message,
+    _ => '$error',
+  };
 
   void _replace(UiScreenDocument? next) {
     final previous = _doc;
@@ -157,13 +196,20 @@ class UiEditorSession {
     if (theme != null) UiThemes.usePreview(theme);
   }
 
-  /// Writes the open screen to its file. True when it was written.
+  /// Writes the open screen to its file. True when it was written; false
+  /// with [lastError] saying why when it was not — the screen then stays
+  /// unsaved.
   bool save() {
     final doc = _doc;
     if (doc == null) return false;
-    project.writeScreen(doc.path, doc.capture());
+    try {
+      project.writeScreen(doc.path, doc.capture());
+    } on Object catch (error) {
+      return _fail('${doc.path} was not saved: ${_describe(error)}');
+    }
     doc.markSaved();
     if (!files.value.contains(doc.path)) refreshFiles();
+    _changed([doc.path]);
     return true;
   }
 
@@ -171,31 +217,50 @@ class UiEditorSession {
   String pathFor(String name, {String folder = 'assets/ui'}) =>
       '$folder/${UiSceneExtractor.fileNameFor(name)}';
 
-  /// A name no listed screen has, from [base].
+  /// A name no screen has from [base] — `Pause`, `Pause2` — whose file
+  /// ([pathFor]) is not there yet either: two names can share a file name
+  /// (`Main Menu` and `MainMenu` are both `main_menu.ui.json`).
   String freeScreenName(String base) {
-    final taken = {for (final path in files.value) _nameOfFile(path)};
-    if (!taken.contains(base.toLowerCase())) return base;
+    if (!_screenNameTaken(base)) return base;
     var n = 2;
-    while (taken.contains('$base$n'.toLowerCase())) {
+    while (_screenNameTaken('$base$n')) {
       n++;
     }
     return '$base$n';
   }
 
-  static String _nameOfFile(String path) => path
-      .split('/')
-      .last
-      .replaceAll('.${UiDocument.extension}', '')
-      .replaceAll('_', '')
-      .toLowerCase();
+  bool _screenNameTaken(String name, {String? except}) {
+    final lower = name.toLowerCase();
+    for (final MapEntry(key: other, value: path) in screensByName.entries) {
+      if (path != except && other.toLowerCase() == lower) return true;
+    }
+    final target = pathFor(name);
+    return target != except && project.exists(target);
+  }
+
+  /// Why the screen list may not be written now, or null when it may.
+  String? get _listProblem => switch (manifestProblem.value) {
+    final problem? =>
+      '${UiScreenManifest.defaultPath} does not read ($problem). Mend it '
+          'by hand first: written over, every screen it names would be lost.',
+    null => null,
+  };
 
   /// Makes a new screen called [name], saves it, lists it, and opens it.
+  ///
+  /// Throws a [FileSystemException] when a file is already where it would
+  /// go (see [freeScreenName]), and a [FormatException] when the screen
+  /// list does not read — nothing is written then.
   UiScreenDocument createScreen(
     String name, {
     bool isScreen = true,
     bool startOpen = false,
   }) {
     final path = pathFor(name);
+    if (project.exists(path)) {
+      throw FileSystemException('A screen is already there', path);
+    }
+    if (_listProblem case final problem?) throw FormatException(problem);
     final doc = UiScreenDocument.blank(
       path,
       name,
@@ -214,9 +279,14 @@ class UiEditorSession {
     } else if (canvas != null) {
       canvas.theme = manifest.value.theme ?? '';
     }
-    project.writeScreen(path, doc.capture());
-    doc.markSaved();
-    _list(path, startOpen: startOpen);
+    try {
+      project.writeScreen(path, doc.capture());
+      doc.markSaved();
+      _list(path, startOpen: startOpen);
+    } on Object {
+      doc.dispose();
+      rethrow;
+    }
     _replace(doc);
     return doc;
   }
@@ -233,73 +303,178 @@ class UiEditorSession {
     return null;
   }
 
-  /// A copy of the screen at [path], under a name of its own, opened.
-  bool duplicateScreen(String path) {
+  /// Writes a copy of the screen at [path], under a name of its own, and
+  /// lists it — without opening it: that is the editor's to do, once it has
+  /// asked about the open screen's unsaved work. The copy's path, or null
+  /// with [lastError] saying why.
+  String? duplicateScreen(String path) {
+    if (_listProblem case final problem?) {
+      _fail(problem);
+      return null;
+    }
     final UiDocument source;
     try {
       source = project.readScreen(path);
-    } on Object {
-      return false;
+    } on Object catch (error) {
+      _fail('$path does not read: ${_describe(error)}');
+      return null;
     }
     final name = freeScreenName('${source.name}Copy');
     final renamed = source.renamed(name);
     final target = pathFor(name);
-    project.writeScreen(target, renamed);
-    _list(target, startOpen: manifest.value.entryFor(path)?.startOpen ?? false);
-    return open(target);
+    try {
+      project.writeScreen(target, renamed);
+      _list(
+        target,
+        startOpen: manifest.value.entryFor(path)?.startOpen ?? false,
+      );
+    } on Object catch (error) {
+      _fail('The copy was not made: ${_describe(error)}');
+      return null;
+    }
+    return target;
+  }
+
+  /// Why the screen at [path] may not be called [name], or null when it
+  /// may: an empty name, one another screen has, a file already where the
+  /// new name would go, one of the screen's own elements being called that
+  /// (names are how a screen's tree is linked), a file that is not the
+  /// project's to change, or a screen list that does not read.
+  String? renameScreenProblem(String path, String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return 'A screen needs a name.';
+    if (!project.isWritable(path)) {
+      return '$path is not a file of this project the editor may change.';
+    }
+    if (_listProblem case final problem?) return problem;
+    for (final MapEntry(key: other, value: at) in screensByName.entries) {
+      if (at != path && other.toLowerCase() == trimmed.toLowerCase()) {
+        return 'Another screen is already called $other.';
+      }
+    }
+    final target = _targetFor(path, trimmed);
+    if (target != path && project.exists(target)) {
+      return 'There is a file at $target already.';
+    }
+    final Iterable<String?> elements;
+    final open = _doc;
+    if (open != null && open.path == path) {
+      elements = [
+        for (final e in open.world.entities)
+          if (e.id != open.canvas.id) e.name,
+      ];
+    } else {
+      try {
+        elements = [
+          for (final e in project.readScreen(path).entities.skip(1))
+            e['name'] as String?,
+        ];
+      } on Object catch (error) {
+        return '$path does not read: ${_describe(error)}';
+      }
+    }
+    if (elements.contains(trimmed)) {
+      return 'One of its own elements is called $trimmed: a screen and its '
+          'elements need names of their own.';
+    }
+    return null;
+  }
+
+  /// Where the screen at [path] goes when it is called [name]: its own file
+  /// again when the two name one file — a change of letter case only, on a
+  /// file system that folds case.
+  String _targetFor(String path, String name) {
+    final target = pathFor(name);
+    if (target == path) return path;
+    return ProjectFiles.samePath(
+          project.absolute(target),
+          project.absolute(path),
+        )
+        ? path
+        : target;
   }
 
   /// Renames the screen at [path] — its canvas, its file, its entry in the
-  /// list. False when [name] is taken or empty.
+  /// list. False, with [lastError] saying why, when [renameScreenProblem]
+  /// has an objection or a file could not be written.
   bool renameScreen(String path, String name) {
+    if (renameScreenProblem(path, name) case final problem?) {
+      return _fail(problem);
+    }
     final trimmed = name.trim();
-    if (trimmed.isEmpty) return false;
-    final target = pathFor(trimmed);
-    if (target != path && project.exists(target)) return false;
+    final target = _targetFor(path, trimmed);
     final open = _doc;
     final wasOpen = open != null && open.path == path;
-    if (wasOpen) {
-      // The open one is renamed where it stands and written, unsaved
-      // changes and all — a rename is not the moment to lose them.
-      open.canvas.name = trimmed;
-      project.writeScreen(target, open.capture());
-      open.path = target;
-      open.markSaved();
-      open.sceneState.refresh();
-    } else {
-      final UiDocument source;
-      try {
-        source = project.readScreen(path);
-      } on Object {
-        return false;
+    final oldName = wasOpen ? open.name : nameOf(path);
+    try {
+      if (wasOpen) {
+        // The open one is renamed where it stands and written, unsaved
+        // changes and all — a rename is not the moment to lose them.
+        final was = open.canvas.name;
+        open.canvas.name = trimmed;
+        try {
+          project.writeScreen(target, open.capture());
+        } on Object {
+          open.canvas.name = was;
+          rethrow;
+        }
+        open.path = target;
+        open.markSaved();
+        open.sceneState.refresh();
+      } else {
+        project.writeScreen(target, project.readScreen(path).renamed(trimmed));
       }
-      project.writeScreen(target, source.renamed(trimmed));
+      // The list before the old file goes: a list naming a file that is
+      // not there is the one thing a failure here must not leave.
+      final entries = [
+        for (final e in manifest.value.screens)
+          e.path == path ? e.copyWith(path: target) : e,
+      ];
+      project.writeManifest(manifest.value.withScreens(entries));
+      if (target != path) project.deleteSync(path);
+    } on Object catch (error) {
+      refreshFiles();
+      return _fail('$path was not renamed: ${_describe(error)}');
     }
-    if (target != path) project.deleteSync(path);
-    final entries = [
-      for (final e in manifest.value.screens)
-        e.path == path ? e.copyWith(path: target) : e,
-    ];
-    project.writeManifest(manifest.value.withScreens(entries));
     refreshFiles();
+    if (oldName != null && behind.value.contains(oldName)) {
+      behind.value = [for (final n in behind.value) n == oldName ? trimmed : n];
+    }
     if (wasOpen) document.value = open;
+    _changed([target, if (target != path) path, UiScreenManifest.defaultPath]);
     return true;
   }
 
-  /// Deletes the screen at [path] and takes it off the list.
-  void deleteScreen(String path) {
-    if (_doc?.path == path) _replace(null);
-    project.deleteSync(path);
+  /// Deletes the screen at [path] and takes it off the list. False, with
+  /// [lastError] saying why, when it is not the project's to delete or the
+  /// list does not read.
+  bool deleteScreen(String path) {
+    if (!project.isWritable(path)) {
+      return _fail(
+        '$path is not a file of this project the editor may change.',
+      );
+    }
+    if (_listProblem case final problem?) return _fail(problem);
     final entries = [
       for (final e in manifest.value.screens)
         if (e.path != path) e,
     ];
-    project.writeManifest(manifest.value.withScreens(entries));
+    try {
+      project.writeManifest(manifest.value.withScreens(entries));
+      if (_doc?.path == path) _replace(null);
+      project.deleteSync(path);
+    } on Object catch (error) {
+      refreshFiles();
+      return _fail('$path was not deleted: ${_describe(error)}');
+    }
     refreshFiles();
+    _changed([path, UiScreenManifest.defaultPath]);
+    return true;
   }
 
-  /// Whether the screen at [path] shows from the game's first frame.
-  void setStartOpen(String path, bool startOpen) {
+  /// Whether the screen at [path] shows from the game's first frame. False,
+  /// with [lastError] saying why, when the list was not written.
+  bool setStartOpen(String path, bool startOpen) {
     final list = manifest.value;
     final entries = list.entryFor(path) == null
         ? [...list.screens, UiScreenEntry(path: path, startOpen: startOpen)]
@@ -307,12 +482,12 @@ class UiEditorSession {
             for (final e in list.screens)
               e.path == path ? e.copyWith(startOpen: startOpen) : e,
           ];
-    project.writeManifest(list.withScreens(entries));
-    refreshFiles();
+    return _writeList(list.withScreens(entries));
   }
 
-  /// Puts [path] on the game's list, or takes it off.
-  void setListed(String path, bool listed) {
+  /// Puts [path] on the game's list, or takes it off. False, with
+  /// [lastError] saying why, when the list was not written.
+  bool setListed(String path, bool listed) {
     final list = manifest.value;
     final entries = listed
         ? [
@@ -323,10 +498,23 @@ class UiEditorSession {
             for (final e in list.screens)
               if (e.path != path) e,
           ];
-    project.writeManifest(list.withScreens(entries));
-    refreshFiles();
+    return _writeList(list.withScreens(entries));
   }
 
+  bool _writeList(UiScreenManifest next) {
+    if (_listProblem case final problem?) return _fail(problem);
+    try {
+      project.writeManifest(next);
+    } on Object catch (error) {
+      refreshFiles();
+      return _fail('The screen list was not saved: ${_describe(error)}');
+    }
+    refreshFiles();
+    _changed([UiScreenManifest.defaultPath]);
+    return true;
+  }
+
+  /// Lists [path], when it is not yet. Throws when the list is not written.
   void _list(String path, {required bool startOpen}) {
     final list = manifest.value;
     if (list.entryFor(path) == null) {
@@ -338,6 +526,7 @@ class UiEditorSession {
       );
     }
     refreshFiles();
+    _changed([path, UiScreenManifest.defaultPath]);
   }
 
   // ── The theme ──────────────────────────────────────────────────────────
@@ -349,10 +538,11 @@ class UiEditorSession {
   List<String> get themeFiles => project.themeFiles();
 
   /// Opens the theme at [path] in the Theme tab. False when it would not
-  /// read.
+  /// read. The theme open before is let go — and what it showed unsaved
+  /// with it.
   bool openTheme(String path) {
     final next = UiThemeDocument.open(project, path);
-    if (next == null) return false;
+    if (next == null) return _fail('$path does not read as a theme.');
     final previous = theme.value;
     theme.value = next;
     previous?.dispose();
@@ -366,24 +556,36 @@ class UiEditorSession {
     return manifest.value.theme;
   }
 
-  /// Makes a theme at [path] from the built-in one, and opens it.
-  void createTheme([String path = 'assets/ui/default.uitheme.json']) {
+  /// Makes a theme at [path] from the built-in one, and opens it. False,
+  /// with [lastError] saying why, when it could not be written.
+  bool createTheme([String path = 'assets/ui/default.uitheme.json']) {
     if (!project.exists(path)) {
-      project.writeJsonSync(
-        path,
-        UiTheme.fallback
-            .copyWith(name: path.split('/').last.split('.').first)
-            .toJson(),
-      );
+      try {
+        project.writeJsonSync(
+          path,
+          UiTheme.fallback
+              .copyWith(name: path.split('/').last.split('.').first)
+              .toJson(),
+        );
+      } on Object catch (error) {
+        return _fail('$path was not made: ${_describe(error)}');
+      }
+      _changed([path]);
     }
-    openTheme(path);
+    return openTheme(path);
   }
 
   /// Saves the open theme; every screen drawn with it already shows it.
+  /// False, with [lastError] saying why, when it was not written.
   bool saveTheme() {
     final open = theme.value;
     if (open == null) return false;
-    open.save(project);
+    try {
+      open.save(project);
+    } on Object catch (error) {
+      return _fail('${open.path} was not saved: ${_describe(error)}');
+    }
+    _changed([open.path]);
     return true;
   }
 
@@ -438,6 +640,10 @@ class UiEditorSession {
   /// Outlines every element, not only the selected ones.
   final Signal<bool> boxes = Signal(false, debugLabel: 'uiBoxes');
 
+  /// Whether a drag on the canvas is going on: the panels that show what
+  /// it changes catch up when it ends, not on every move.
+  final Signal<bool> dragging = Signal(false, debugLabel: 'uiDragging');
+
   static const List<double> zoomStops = [
     0.1,
     0.15,
@@ -483,11 +689,15 @@ class UiEditorSession {
     doc.editorData.value = {...doc.editorData.value, 'device': next.toJson()};
   }
 
-  /// The guides of the open screen.
-  List<UiGuide> get guides => [
-    for (final g in (_doc?.editorData.value['guides'] as List? ?? const []))
-      ?UiGuide.fromJson(g),
-  ];
+  /// The guides of the open screen. Entries that are no guide — a file
+  /// edited by hand — are passed over.
+  List<UiGuide> get guides {
+    final saved = _doc?.editorData.value['guides'];
+    return [
+      if (saved is List)
+        for (final g in saved) ?UiGuide.fromJson(g),
+    ];
+  }
 
   void setGuides(List<UiGuide> next, {String label = 'Move guide'}) =>
       _doc?.setEditorData('guides', [
@@ -499,6 +709,11 @@ class UiEditorSession {
   final Signal<UiEditMode> mode = Signal(UiEditMode.edit, debugLabel: 'uiMode');
 
   bool get previewing => mode.value == UiEditMode.preview;
+
+  /// The canvas Preview shows: a copy of the open screen's, which a player
+  /// may change as they like (see the canvas view), or null outside
+  /// Preview.
+  Entity? previewCanvas;
 
   /// Other screens drawn underneath the open one, by name — the HUD under
   /// a pause menu.
@@ -515,11 +730,14 @@ class UiEditorSession {
 
   /// Made-up values for the bindings the screen reads, so `{coins}` shows
   /// something while the game is not running.
-  Map<String, String> get samples => {
-    for (final entry
-        in ((_doc?.editorData.value['samples'] as Map?) ?? const {}).entries)
-      '${entry.key}': '${entry.value}',
-  };
+  Map<String, String> get samples {
+    final saved = _doc?.editorData.value['samples'];
+    return {
+      if (saved is Map)
+        for (final entry in saved.entries)
+          if (entry.value != null) '${entry.key}': '${entry.value}',
+    };
+  }
 
   void setSample(String binding, String? value) {
     final next = {...samples};
@@ -573,6 +791,7 @@ class UiEditorSession {
       document,
       theme,
       manifest,
+      manifestProblem,
       files,
       device,
       landscape,
@@ -585,6 +804,7 @@ class UiEditorSession {
       rulers,
       showGuides,
       boxes,
+      dragging,
       mode,
       behind,
       forcedState,

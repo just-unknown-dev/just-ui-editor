@@ -29,37 +29,37 @@ abstract final class UiFieldEditors {
     UiFieldTypes.uiColorRole.id: _colorRole,
   };
 
+  /// What an unset role — a file edited by hand — reads as: the element's
+  /// own default, which is not the first role of the list (a panel with
+  /// none is drawn in `surface`, a button in `primary`).
+  static const String unsetRole = '(its default)';
+
   /// Which of the theme's colours this element is drawn in. A name the
   /// palette does not carry stays listed: opening the inspector must never
-  /// quietly rewrite what a game named.
-  static Widget _colorRole(FieldEditorContext c) {
-    final current = c.value as String? ?? '';
-    if (c.readOnly) return ReadonlyRow(label: c.label, value: current);
-    return DropdownEditorRow(
-      label: c.label,
-      value: current.isEmpty ? UiPalette.roles.first : current,
-      options: [
-        ...UiPalette.roles,
-        if (current.isNotEmpty && !UiPalette.roles.contains(current)) current,
-      ],
-      allowCustom: true,
-      onChanged: c.onChanged,
-    );
-  }
+  /// quietly rewrite what a game named — nor show a role it does not have.
+  static Widget _colorRole(FieldEditorContext c) => _role(c, UiPalette.roles);
 
   /// Which of the theme's text styles this element reads as.
-  static Widget _styleRole(FieldEditorContext c) {
-    final current = c.value as String? ?? '';
-    if (c.readOnly) return ReadonlyRow(label: c.label, value: current);
+  static Widget _styleRole(FieldEditorContext c) => _role(c, UiTheme.textRoles);
+
+  static Widget _role(FieldEditorContext c, List<String> roles) {
+    final current = c.value is String ? c.value! as String : '';
+    if (c.readOnly) {
+      return ReadonlyRow(
+        label: c.label,
+        value: current.isEmpty ? unsetRole : current,
+      );
+    }
     return DropdownEditorRow(
       label: c.label,
-      value: current.isEmpty ? UiTheme.textRoles.first : current,
+      value: current.isEmpty ? unsetRole : current,
       options: [
-        ...UiTheme.textRoles,
-        if (current.isNotEmpty && !UiTheme.textRoles.contains(current)) current,
+        if (current.isEmpty) unsetRole,
+        ...roles,
+        if (current.isNotEmpty && !roles.contains(current)) current,
       ],
       allowCustom: true,
-      onChanged: c.onChanged,
+      onChanged: (picked) => c.onChanged(picked == unsetRole ? '' : picked),
     );
   }
 

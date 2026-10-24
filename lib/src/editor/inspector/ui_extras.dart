@@ -55,6 +55,19 @@ abstract final class UiExtras {
       },
     ),
     ComponentEditorExtras(
+      type: 'UiPanelComponent',
+      fieldEditors: {
+        // Saved as `#aarrggbb` words; offered as colours to pick, one per
+        // stop, rather than a list of strings to type.
+        'gradient': (c) => _ColorListRow(
+          label: c.label,
+          value: c.value is List ? c.value! as List : const [],
+          readOnly: c.readOnly,
+          onChanged: c.onChanged,
+        ),
+      },
+    ),
+    ComponentEditorExtras(
       type: 'UiCanvasComponent',
       summary: (c) {
         final canvas = c as ui.UiCanvasComponent;
@@ -73,8 +86,101 @@ abstract final class UiExtras {
   ];
 }
 
+/// Colours in order — a gradient's stops — each picked as a colour, with
+/// one more added at the end and any taken out.
+class _ColorListRow extends StatelessWidget {
+  const _ColorListRow({
+    required this.label,
+    required this.value,
+    required this.readOnly,
+    required this.onChanged,
+  });
+
+  final String label;
+
+  /// The colours as saved: `#aarrggbb` words (numbers are read too).
+  final List<Object?> value;
+  final bool readOnly;
+  final ValueChanged<Object?> onChanged;
+
+  List<Color> get _colors => [
+    for (final item in value)
+      ?(item is num ? Color(item.toInt()) : ui.UiRichText.parseColor('$item')),
+  ];
+
+  void _set(List<Color> colors) =>
+      onChanged([for (final c in colors) ui.UiRichText.writeColor(c)]);
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = _colors;
+    if (readOnly) {
+      return ReadonlyRow(
+        label: label,
+        value: colors.isEmpty
+            ? 'none'
+            : [for (final c in colors) ui.UiRichText.writeColor(c)].join(' '),
+      );
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: InspectorField.labelWidth,
+          height: InspectorField.height,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(label, style: InspectorField.labelStyle),
+          ),
+        ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < colors.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: MiniColorField(
+                          color: colors[i],
+                          onChanged: (c) => _set([...colors]..[i] = c),
+                        ),
+                      ),
+                      EditorIconButton(
+                        icon: Icons.close_rounded,
+                        tooltip: 'Take this colour out',
+                        onTap: () => _set([...colors]..removeAt(i)),
+                      ),
+                    ],
+                  ),
+                ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: EditorIconButton(
+                  icon: Icons.add_rounded,
+                  tooltip: colors.isEmpty
+                      ? 'Sweep colours across it — two or more'
+                      : 'Add a colour',
+                  onTap: () => _set([
+                    ...colors,
+                    if (colors.isEmpty) const Color(0xFF3A7BD5),
+                    colors.isEmpty ? const Color(0xFF00D2FF) : colors.last,
+                  ]),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// Which widget a `UiCustomComponent` is, chosen from what the game
 /// registered.
+
 class _WidgetIdField extends StatelessWidget {
   const _WidgetIdField({
     required this.label,
@@ -87,6 +193,9 @@ class _WidgetIdField extends StatelessWidget {
   final String value;
   final bool readOnly;
   final ValueChanged<Object?> onChanged;
+
+  /// What a custom widget with none chosen yet reads as.
+  static const String none = '(none chosen)';
 
   @override
   Widget build(BuildContext context) {
@@ -102,12 +211,14 @@ class _WidgetIdField extends StatelessWidget {
         value: value.isEmpty ? '(none registered)' : value,
       );
     }
+    // None chosen says so, rather than showing the first widget as though
+    // it were the one — which then could not be picked.
     return DropdownEditorRow(
       label: label,
-      value: ids.contains(value) ? value : ids.first,
-      options: ids,
+      value: value.isEmpty ? none : value,
+      options: [if (value.isEmpty) none, ...ids],
       searchable: ids.length > 8,
-      onChanged: onChanged,
+      onChanged: (picked) => onChanged(picked == none ? '' : picked),
     );
   }
 }

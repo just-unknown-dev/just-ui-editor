@@ -33,7 +33,7 @@ abstract final class UiSchemas {
       fieldGroups: {
         'Content': ['textValue', 'styleRole'],
         'Look': ['style'],
-        'Layout': ['w', 'h', 'align', 'overflow', 'wrap', 'maxLines'],
+        'Layout': ['w', 'h', 'align', 'overflow', 'wrap', 'maxLines', 'layer'],
         'Reveal': ['revealSpeed'],
       },
       fieldRows: [
@@ -84,6 +84,11 @@ abstract final class UiSchemas {
           label: 'Type out',
           description: 'Characters a second; 0 shows it all at once.',
           scrub: ScrubHint(step: 1, fractionDigits: 0),
+        ),
+        'layer': FieldHint(
+          label: 'Layer',
+          description: 'Higher draws over lower, among text and buttons.',
+          scrub: ScrubHint(integer: true),
         ),
       },
     ),
@@ -174,7 +179,16 @@ abstract final class UiSchemas {
             (c as TextComponent).revealSpeed = (v as num?)?.toDouble() ?? 0,
         min: 0,
       ),
+      _layer(),
     ],
+  );
+
+  /// The draw (and, for a button, press) order among text and buttons.
+  static SchemaField _layer() => SchemaField(
+    name: 'layer',
+    kind: FieldTypes.integer,
+    read: (c) => (c as UIComponent).layer,
+    write: (c, v) => (c as UIComponent).layer = (v as num?)?.toInt() ?? 0,
   );
 
   /// [ButtonComponent]: a button in the world, and what pressing it does.
@@ -193,7 +207,7 @@ abstract final class UiSchemas {
             'Label': ['label', 'styleRole', 'labelStyle'],
             'Does': ['onPressed'],
             'Look': ['colorRole', 'color', 'borderColor', 'borderRadius'],
-            'Size': ['w', 'h'],
+            'Size': ['w', 'h', 'layer', 'enabled'],
           },
           fieldRows: [
             FieldRowHint('Size', {'w': 'W', 'h': 'H'}),
@@ -232,6 +246,17 @@ abstract final class UiSchemas {
             'h': FieldHint(
               label: 'Height',
               scrub: ScrubHint(step: 4, fractionDigits: 0),
+            ),
+            'layer': FieldHint(
+              label: 'Layer',
+              description:
+                  'Higher draws over lower and takes the press where two '
+                  'overlap.',
+              scrub: ScrubHint(integer: true),
+            ),
+            'enabled': FieldHint(
+              label: 'Can be pressed',
+              description: 'Off draws it faded, and it does nothing.',
             ),
           },
         ),
@@ -313,6 +338,14 @@ abstract final class UiSchemas {
               b.size = Size(b.size.width, (v as num).toDouble());
             },
             min: 0.0,
+          ),
+          _layer(),
+          SchemaField(
+            name: 'enabled',
+            kind: FieldTypes.boolean,
+            read: (c) => (c as ButtonComponent).enabled,
+            write: (c, v) =>
+                (c as ButtonComponent).enabled = v as bool? ?? true,
           ),
         ],
       );

@@ -21,6 +21,7 @@ class UiCanvasMetrics {
     required this.view,
     required this.document,
     required this.nodes,
+    this.ids,
   });
 
   /// The box the editor draws its handles in.
@@ -29,7 +30,17 @@ class UiCanvasMetrics {
   final UiScreenDocument document;
   final UiNodeBoxes nodes;
 
-  RenderBox? _boxOf(Entity entity) => nodes[entity.id];
+  /// Where [nodes] are of another world than [document]'s — Preview shows
+  /// a copy of the screen — the copy's id for each of the document's
+  /// entities. An entity it does not name is not on screen.
+  final Map<EntityId, EntityId>? ids;
+
+  RenderBox? _boxOf(Entity entity) {
+    final map = ids;
+    if (map == null) return nodes[entity.id];
+    final id = map[entity.id];
+    return id == null ? null : nodes[id];
+  }
 
   /// Where [entity] is on the view, or null when it is not drawn.
   Rect? viewRectOf(Entity entity) {

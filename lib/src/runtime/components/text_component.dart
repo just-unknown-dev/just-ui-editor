@@ -109,14 +109,8 @@ class TextComponent extends UIComponent {
     return _parsed = UiRichText.parse(source);
   }
 
-  String _resolve({Entity? self, String Function(String key)? localise}) {
-    var source = _text;
-    if (source.startsWith('@') && source.length > 1) {
-      final key = source.substring(1);
-      source = localise?.call(key) ?? key;
-    }
-    return UiBindings.interpolate(source, self: self);
-  }
+  String _resolve({Entity? self, String Function(String key)? localise}) =>
+      UiBindings.resolveText(_text, self: self, localise: localise);
 
   /// Whether this text is still typing itself out.
   bool get isRevealing =>

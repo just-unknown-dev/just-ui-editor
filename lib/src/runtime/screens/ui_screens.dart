@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:just_game_engine/just_game_engine.dart';
 
+import '../components/button_component.dart';
 import '../components/screen/ui_canvas_component.dart';
 import '../layer/ui_navigator.dart';
 import '../logic/ui_actions.dart';
@@ -125,21 +126,31 @@ class UiScreens {
 
   /// Reads the themes the screen list and the canvases name, so the first
   /// frames are not drawn with the fallback.
+  ///
+  /// The list's theme becomes [UiThemes.fallback]: what a screen that names
+  /// no theme is drawn with, and what text and buttons in the level are
+  /// drawn with ([UiWorldStyle]). [dispose] puts the built-in one back.
   Future<void> loadThemes() async {
     final theme = manifest?.theme;
     if (theme != null) {
       await UiThemes.usePreview(theme);
-      // What a screen that names no theme is drawn with.
       UiThemes.fallback = UiThemes.preview;
+      _themeOwner = this;
     }
     await UiThemes.loadFor(world);
   }
 
+  /// The screens whose list last chose [UiThemes.fallback]: only they hand
+  /// it back on [dispose] — not older screens being replaced by them.
+  static UiScreens? _themeOwner;
+
   /// Builds [document] as one of the screens, open from the start when
-  /// [startOpen]. A screen already there with its name is replaced.
+  /// [startOpen]. A screen already there with its name is replaced — once
+  /// the new one has been built, so a file that will not read leaves the
+  /// old one standing.
   Entity add(UiDocument document, {bool startOpen = false}) {
-    remove(document.name);
     final canvas = document.instantiate(world);
+    _removeLoaded(document.name);
     _loaded.add(_Loaded(document, canvas, startOpen));
     _open(canvas, startOpen);
     return canvas;
@@ -147,11 +158,15 @@ class UiScreens {
 
   /// Takes the screen called [name] away.
   void remove(String name) {
+    _removeLoaded(name);
+    navigator.adopt();
+  }
+
+  void _removeLoaded(String name) {
     for (final l in _loaded.where((l) => l.document.name == name).toList()) {
       _destroyTree(l.canvas);
       _loaded.remove(l);
     }
-    navigator.adopt();
   }
 
   /// Every screen as it was first built: typed text, ticked boxes and open
@@ -212,11 +227,39 @@ class UiScreens {
   UiActionHost get host => navigator.fillingIn(const UiActionHost());
 
   /// One frame of the screens' own systems.
-  void update(double dt) => world.update(dt);
+  ///
+  /// A button pressed on a screen keeps [ButtonComponent.wasPressed] for
+  /// one of these, as a button in the level does for one frame, and then
+  /// lets it go.
+  void update(double dt) {
+    for (final entity in world.query(const [ButtonComponent])) {
+      final button = entity.getComponent<ButtonComponent>()!;
+      if (!button.wasPressed) {
+        _pressSeen.remove(button);
+      } else if (!_pressSeen.add(button)) {
+        button.wasPressed = false;
+        _pressSeen.remove(button);
+      }
+    }
+    world.update(dt);
+  }
+
+  /// Buttons whose press has had its frame.
+  final Set<ButtonComponent> _pressSeen = {};
 
   void dispose() {
     system.onChanged = null;
     world.dispose();
+    // The theme the list chose was this game's; the next one (or a test)
+    // starts from the built-in look.
+    if (identical(_themeOwner, this)) {
+      _themeOwner = null;
+      if (identical(UiThemes.preview, UiThemes.fallback)) {
+        UiThemes.preview = UiTheme.fallback;
+        UiThemes.previewPath = null;
+      }
+      UiThemes.fallback = UiTheme.fallback;
+    }
   }
 }
 

@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_ui_editor/editor.dart';
 import 'package:just_ui_editor/just_ui_editor.dart';
+import 'package:just_ui_editor/src/editor/session/ui_slot_edit.dart';
 
 /// A world whose context knows the interface's components, as a game's
 /// engine does with JustGameUi.extension installed.
@@ -84,8 +85,15 @@ void main() {
       UiCreate.create(doc, 'button');
       session.save();
 
-      expect(session.duplicateScreen(doc.path), isTrue);
+      final path = session.duplicateScreen(doc.path);
+      expect(path, 'assets/ui/pause_copy.ui.json');
+      expect(
+        session.document.value,
+        same(doc),
+        reason: 'opening the copy is the editor\'s, once it has asked',
+      );
 
+      expect(session.open(path!), isTrue);
       final copy = session.document.value!;
       expect(copy.name, 'PauseCopy');
       expect(copy.entities.length, 2);
@@ -342,6 +350,401 @@ void main() {
       expect(hint.getComponent<UiSlotComponent>()!.visible, isFalse);
       doc.history.undo();
       expect(hint.getComponent<UiSlotComponent>()!.visible, isTrue);
+    });
+
+    test('switching off is saved, undone, and copied as it is', () {
+      final doc = session.createScreen('Pause');
+      final hint = UiCreate.create(doc, 'text')!;
+      session.setEnabled(hint, false);
+      expect(hint.isActive, isFalse);
+
+      doc.sceneState.selectEntity(hint);
+      session.duplicateSelection();
+      final copy = doc.sceneState.selectedEntity.value!;
+      expect(copy.id, isNot(hint.id));
+      expect(copy.isActive, isFalse, reason: 'a copy of something off');
+
+      session.copySelection();
+      session.paste();
+      expect(doc.sceneState.selectedEntity.value!.isActive, isFalse);
+
+      doc.history.undo();
+      doc.history.undo();
+      doc.history.undo();
+      expect(hint.isActive, isTrue);
+    });
+
+    test('duplicates go beside their own originals, whatever parents', () {
+      final doc = session.createScreen('Pause');
+      final column = UiCreate.create(doc, 'column', parent: doc.canvas)!;
+      final inColumn = UiCreate.create(doc, 'text', parent: column)!;
+      final panel = UiCreate.create(doc, 'panel', parent: doc.canvas)!;
+      final inPanel = UiCreate.create(doc, 'button', parent: panel)!;
+      doc.sceneState.selectEntity(inColumn);
+      doc.sceneState.toggleMultiSelect(inPanel);
+
+      session.duplicateSelection();
+
+      List<String?> names(Entity parent) => [
+        for (final id in parent.getComponent<ChildrenComponent>()!.childIds)
+          doc.world.getEntity(id)!.name,
+      ];
+      expect(names(column), hasLength(2));
+      expect(names(panel), hasLength(2));
+      expect(names(column).first, inColumn.name);
+      expect(names(panel).first, inPanel.name);
+    });
+
+    test('two copies in one parent each land after their original', () {
+      final doc = session.createScreen('Pause');
+      final column = UiCreate.create(doc, 'column', parent: doc.canvas)!;
+      final a = UiCreate.create(doc, 'text', parent: column)!;
+      final b = UiCreate.create(doc, 'button', parent: column)!;
+      doc.sceneState.selectEntity(a);
+      doc.sceneState.toggleMultiSelect(b);
+
+      session.duplicateSelection();
+
+      final order = [
+        for (final id in column.getComponent<ChildrenComponent>()!.childIds)
+          doc.world.getEntity(id)!.name,
+      ];
+      expect(order, ['Text', 'Text2', 'Button', 'Button2']);
+    });
+  });
+
+  group('undo reaches an element made again', () {
+    UiSlotState moved(UiSlotState s) =>
+        s.copyWith(offset: s.offset + const Offset(100, 0));
+
+    test('a move undone with its making, and both made again', () {
+      final doc = session.createScreen('Pause');
+      final button = UiCreate.create(doc, 'button')!;
+      final before = UiSlotState.of(button.getComponent<UiSlotComponent>()!);
+      doc.history.push(
+        UiSlotEditCommand(
+          label: 'Move',
+          sceneState: doc.sceneState,
+          changes: {button: (before, moved(before))},
+        ),
+      );
+
+      doc.history
+        ..undo()
+        ..undo()
+        ..redo()
+        ..redo();
+
+      final again = doc.world.findEntityByName(button.name!)!;
+      expect(again.id, isNot(button.id), reason: 'made again, a new entity');
+      expect(
+        again.getComponent<UiSlotComponent>()!.offset,
+        moved(before).offset,
+      );
+    });
+
+    test('a move before a delete is undone after the delete is', () {
+      final doc = session.createScreen('Pause');
+      final button = UiCreate.create(doc, 'button')!;
+      final before = UiSlotState.of(button.getComponent<UiSlotComponent>()!);
+      doc.history.push(
+        UiSlotEditCommand(
+          label: 'Move',
+          sceneState: doc.sceneState,
+          changes: {button: (before, moved(before))},
+        ),
+      );
+      doc.sceneState.selectEntity(button);
+      session.deleteSelection();
+
+      doc.history
+        ..undo()
+        ..undo();
+
+      final again = doc.world.findEntityByName(button.name!)!;
+      expect(again.getComponent<UiSlotComponent>()!.offset, before.offset);
+    });
+  });
+
+  group('names that share a file', () {
+    test('a new screen never takes a file another one has', () {
+      session.createScreen('MainMenu');
+      final path = 'assets/ui/main_menu.ui.json';
+      final bytes = File('${dir.path}/$path').readAsBytesSync();
+
+      for (final typed in const ['Main Menu', 'main_menu', 'MAIN MENU']) {
+        expect(session.freeScreenName(typed), '${typed}2', reason: typed);
+        expect(
+          () => session.createScreen(typed),
+          throwsA(isA<FileSystemException>()),
+          reason: typed,
+        );
+      }
+      expect(File('${dir.path}/$path').readAsBytesSync(), bytes);
+    });
+
+    test('duplicating twice makes two copies', () {
+      final doc = session.createScreen('Main Menu');
+      final first = session.duplicateScreen(doc.path);
+      final second = session.duplicateScreen(doc.path);
+
+      expect(first, isNotNull);
+      expect(second, isNotNull);
+      expect(second, isNot(first));
+      expect(session.manifest.value.screens, hasLength(3));
+    });
+  });
+
+  group('a screen list that does not read', () {
+    late List<int> bytes;
+
+    setUp(() {
+      session.createScreen('Pause');
+      final list = File('${dir.path}/${UiScreenManifest.defaultPath}');
+      list.writeAsStringSync('{"format": 1, "screens": [,]}');
+      bytes = list.readAsBytesSync();
+      session.refreshFiles();
+    });
+
+    List<int> onDisk() =>
+        File('${dir.path}/${UiScreenManifest.defaultPath}').readAsBytesSync();
+
+    test('says so, and is never written over', () {
+      expect(session.manifestProblem.value, isNotNull);
+
+      expect(session.setStartOpen('assets/ui/pause.ui.json', true), isFalse);
+      expect(session.lastError, contains('does not read'));
+      expect(session.setListed('assets/ui/pause.ui.json', false), isFalse);
+      expect(session.renameScreen('assets/ui/pause.ui.json', 'Paws'), isFalse);
+      expect(session.deleteScreen('assets/ui/pause.ui.json'), isFalse);
+      expect(session.duplicateScreen('assets/ui/pause.ui.json'), isNull);
+      expect(
+        () => session.createScreen('Options'),
+        throwsA(isA<FormatException>()),
+      );
+
+      expect(onDisk(), bytes);
+      expect(File('${dir.path}/assets/ui/pause.ui.json').existsSync(), isTrue);
+      expect(
+        File('${dir.path}/assets/ui/options.ui.json').existsSync(),
+        isFalse,
+      );
+    });
+
+    test('nor by the project itself', () {
+      expect(
+        () => UiProject(dir.path).writeManifest(UiScreenManifest()),
+        throwsA(isA<FormatException>()),
+      );
+      expect(onDisk(), bytes);
+    });
+  });
+
+  group('a screen list with keys it does not know', () {
+    final json = {
+      'format': 1,
+      'notes': 'kept by hand',
+      'screens': [
+        {'path': 'assets/ui/pause.ui.json', 'group': 'menus'},
+      ],
+    };
+
+    test('reads and writes them back as they were', () {
+      final list = UiScreenManifest.fromJson(json);
+      expect(list.extra, {'notes': 'kept by hand'});
+      expect(list.screens.single.extra, {'group': 'menus'});
+      expect(list.toJson(), json);
+      expect(
+        list.withScreens([
+          list.screens.single.copyWith(startOpen: true),
+        ]).toJson(),
+        {
+          'format': 1,
+          'notes': 'kept by hand',
+          'screens': [
+            {
+              'path': 'assets/ui/pause.ui.json',
+              'group': 'menus',
+              'startOpen': true,
+            },
+          ],
+        },
+      );
+    });
+
+    test('and the editor keeps them through its changes', () {
+      session.createScreen('Pause');
+      File(
+        '${dir.path}/${UiScreenManifest.defaultPath}',
+      ).writeAsStringSync(jsonEncode(json));
+      session.refreshFiles();
+
+      expect(session.setStartOpen('assets/ui/pause.ui.json', true), isTrue);
+      expect(session.renameScreen('assets/ui/pause.ui.json', 'Paws'), isTrue);
+
+      final saved = readJson(UiScreenManifest.defaultPath);
+      expect(saved['notes'], 'kept by hand');
+      expect(saved['screens'], [
+        {'path': 'assets/ui/paws.ui.json', 'group': 'menus', 'startOpen': true},
+      ]);
+    });
+  });
+
+  group('renaming a screen', () {
+    test('to the name another screen has, in a file of another name', () {
+      session.createScreen('Options');
+      // A file named for one thing, holding a screen called another.
+      final pause = UiDocument.capture(
+        (_uiWorld()..initialize()).createEntityWithComponents([
+          UiCanvasComponent(),
+        ], name: 'Pause'),
+        _uiWorld()..initialize(),
+      );
+      UiProject(dir.path).writeScreen('assets/ui/pause_menu.ui.json', pause);
+      session.refreshFiles();
+
+      expect(
+        session.renameScreen('assets/ui/options.ui.json', 'Pause'),
+        isFalse,
+      );
+      expect(session.lastError, contains('Another screen is already called'));
+    });
+
+    test('to the name of one of its own elements', () {
+      final doc = session.createScreen('Hud');
+      UiCreate.create(doc, 'text', parent: doc.canvas);
+
+      expect(session.rename(doc.canvas, 'Text'), isFalse);
+      expect(session.lastError, contains('its own elements'));
+      expect(doc.name, 'Hud');
+    });
+
+    test('what is shown under the open one follows the new name', () {
+      session.createScreen('Hud');
+      session.createScreen('Pause');
+      session.behind.value = ['Hud'];
+
+      expect(session.renameScreen('assets/ui/hud.ui.json', 'Overlay'), isTrue);
+      expect(session.behind.value, ['Overlay']);
+    });
+  });
+
+  group('every file written is told of', () {
+    test('saving, listing, renaming, copying and deleting', () {
+      final heard = <String>[];
+      final told = UiEditorSession(
+        project: UiProject(dir.path),
+        onFilesChanged: heard.addAll,
+      );
+      addTearDown(told.dispose);
+
+      final doc = told.createScreen('Pause');
+      expect(heard, contains(doc.path));
+      heard.clear();
+
+      UiCreate.create(doc, 'text');
+      told.save();
+      expect(heard, [doc.path]);
+      heard.clear();
+
+      told.setStartOpen(doc.path, true);
+      expect(heard, [UiScreenManifest.defaultPath]);
+      heard.clear();
+
+      final copy = told.duplicateScreen(doc.path)!;
+      expect(heard, containsAll([copy, UiScreenManifest.defaultPath]));
+      heard.clear();
+
+      told.renameScreen(copy, 'Paws');
+      expect(
+        heard,
+        containsAll([
+          'assets/ui/paws.ui.json',
+          copy,
+          UiScreenManifest.defaultPath,
+        ]),
+      );
+      heard.clear();
+
+      told.deleteScreen('assets/ui/paws.ui.json');
+      expect(heard, contains('assets/ui/paws.ui.json'));
+    });
+  });
+
+  group('files that do not read, and writes that fail', () {
+    test('a screen that does not read says why', () {
+      File('${dir.path}/assets/ui/broken.ui.json')
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync('{"entities": [');
+
+      expect(session.open('assets/ui/broken.ui.json'), isFalse);
+      expect(session.lastError, startsWith('assets/ui/broken.ui.json'));
+    });
+
+    test('a save that fails says so, and the screen stays unsaved', () {
+      final doc = session.createScreen('Pause');
+      UiCreate.create(doc, 'text');
+      // Something that is no file stands where it is saved.
+      File('${dir.path}/${doc.path}').deleteSync();
+      Directory('${dir.path}/${doc.path}').createSync();
+
+      expect(session.save(), isFalse);
+      expect(session.lastError, contains(doc.path));
+      expect(doc.dirty.value, isTrue);
+      expect(
+        File('${dir.path}/${doc.path}.saving').existsSync(),
+        isFalse,
+        reason: 'what was half written is cleared away',
+      );
+    });
+
+    test('nothing is written outside the project', () {
+      final project = UiProject(dir.path);
+      expect(project.isWritable('../elsewhere.ui.json'), isFalse);
+      expect(
+        () => project.writeSync('../elsewhere.ui.json', '{}'),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(
+        File('${dir.parent.path}/elsewhere.ui.json').existsSync(),
+        isFalse,
+      );
+    });
+
+    test('an editor section edited by hand opens all the same', () {
+      final doc = session.createScreen('Pause');
+      session.save();
+      final json = readJson(doc.path)
+        ..['editor'] = {
+          'guides': {'at': 3},
+          'samples': ['coins'],
+          'device': {'name': 'Mine', 'width': '390', 'height': 0},
+        };
+      File('${dir.path}/${doc.path}').writeAsStringSync(jsonEncode(json));
+
+      expect(session.open(doc.path), isTrue);
+      expect(session.guides, isEmpty);
+      expect(session.samples, isEmpty);
+      final device = session.device.value;
+      expect(device.width, 1280, reason: 'a size that is not a number');
+      expect(device.height, UiDevice.minSide);
+    });
+
+    test('guides that are half right keep what is right', () {
+      final doc = session.createScreen('Pause');
+      session.save();
+      final json = readJson(doc.path)
+        ..['editor'] = {
+          'guides': [
+            {'axis': 'x', 'at': 12},
+            {'axis': 'y', 'at': 'twelve'},
+            'nonsense',
+          ],
+        };
+      File('${dir.path}/${doc.path}').writeAsStringSync(jsonEncode(json));
+
+      expect(session.open(doc.path), isTrue);
+      expect(session.guides, const [UiGuide(vertical: true, at: 12)]);
     });
   });
 }

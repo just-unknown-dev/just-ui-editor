@@ -6,6 +6,7 @@ import 'package:flutter/material.dart' show Icons;
 import 'package:flutter/painting.dart';
 
 import '../logic/ui_actions.dart';
+import '../text/ui_rich_text.dart';
 import 'package:just_game_engine/just_game_engine.dart';
 import 'ui_field_types.dart';
 import '../components/screen/ui_canvas_component.dart';
@@ -441,7 +442,7 @@ abstract final class UiDefinitions {
           icon: Icons.rectangle_outlined,
           accentColor: _accent,
           fieldGroups: {
-            'Fill': ['colorRole', 'color', 'image'],
+            'Fill': ['colorRole', 'color', 'gradient', 'image'],
             'Edge': ['borderColor', 'borderWidth', 'radius'],
             'Depth': ['shadowBlur', 'blur'],
             'Nine-slice': ['nineSlice'],
@@ -454,8 +455,17 @@ abstract final class UiDefinitions {
                   'clear that and this decides.',
             ),
             'color': FieldHint(label: 'Colour'),
+            'gradient': FieldHint(
+              label: 'Gradient',
+              description:
+                  'Two or more colours (#rrggbb or #aarrggbb) swept across '
+                  'it, top-left to bottom-right, instead of a flat colour.',
+            ),
             'image': FieldHint(
               label: 'Image',
+              description:
+                  'A picture instead of a colour, stretched to fill it — '
+                  'with Slices, only its middle stretches.',
               fileExtensions: ['png', 'jpg', 'jpeg', 'webp'],
             ),
             'borderColor': FieldHint(label: 'Border'),
@@ -465,7 +475,10 @@ abstract final class UiDefinitions {
             'blur': FieldHint(label: 'Frost'),
             'nineSlice': FieldHint(
               label: 'Slices',
-              description: 'Which parts of the image stretch.',
+              description:
+                  'How far in from each edge of the image, in its pixels, '
+                  'the corners and sides end: they keep their size, and the '
+                  'middle stretches.',
             ),
           },
         ),
@@ -481,6 +494,25 @@ abstract final class UiDefinitions {
             'color',
             (c) => c.color,
             (c, v) => c.color = v,
+          ),
+          SchemaField(
+            name: 'gradient',
+            kind: FieldTypes.list,
+            read: (c) => [
+              for (final color
+                  in (c as UiPanelComponent).gradient ?? const <Color>[])
+                UiRichText.writeColor(color),
+            ],
+            write: (c, v) {
+              final colors = [
+                if (v is List)
+                  for (final item in v)
+                    ?(item is num
+                        ? Color(item.toInt())
+                        : UiRichText.parseColor('$item')),
+              ];
+              (c as UiPanelComponent).gradient = colors.isEmpty ? null : colors;
+            },
           ),
           _color<UiPanelComponent>(
             'borderColor',
@@ -537,9 +569,15 @@ abstract final class UiDefinitions {
           fields: {
             'path': FieldHint(
               label: 'Image',
-              fileExtensions: ['png', 'jpg', 'jpeg', 'webp'],
+              description: 'A picture, or — with a Region — an atlas.',
+              fileExtensions: ['png', 'jpg', 'jpeg', 'webp', 'json'],
             ),
-            'atlasRegion': FieldHint(label: 'Region'),
+            'atlasRegion': FieldHint(
+              label: 'Region',
+              description:
+                  'A region of the atlas above, by name; empty shows the '
+                  'whole picture.',
+            ),
             'fit': FieldHint(label: 'Fit'),
             'tint': FieldHint(label: 'Tint'),
             'opacity': FieldHint(label: 'Opacity'),

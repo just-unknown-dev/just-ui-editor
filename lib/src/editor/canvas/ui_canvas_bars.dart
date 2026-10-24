@@ -7,6 +7,7 @@ import 'package:just_editor_core/just_editor_core.dart';
 import 'package:just_signals/just_signals.dart';
 
 import '../../runtime/components/button_component.dart';
+import '../../runtime/components/screen/ui_canvas_component.dart';
 import '../../runtime/components/screen/ui_elements.dart';
 import '../../runtime/components/text_component.dart';
 import '../../runtime/logic/ui_bindings.dart';
@@ -324,9 +325,13 @@ class _Gap extends StatelessWidget {
 /// its buttons in another state, made-up values for what it reads, bigger
 /// text — and what the last button pressed in Preview would have done.
 class UiPreviewStrip extends StatefulWidget {
-  const UiPreviewStrip({super.key, required this.session});
+  const UiPreviewStrip({super.key, required this.session, this.onOpen});
 
   final UiEditorSession session;
+
+  /// Opens a screen — asking about the open one's unsaved work first: what
+  /// "Open it" does. Without one, "Open it" is not offered.
+  final void Function(String path)? onOpen;
 
   @override
   State<UiPreviewStrip> createState() => _UiPreviewStripState();
@@ -463,9 +468,12 @@ class _UiPreviewStripState extends State<UiPreviewStrip> {
               ),
             ),
           ),
-          if (_openTarget(message) case final path?)
+          if ((widget.onOpen, _openTarget(message)) case (
+            final open?,
+            final path?,
+          ))
             TextButton(
-              onPressed: () => session.open(path),
+              onPressed: () => open(path),
               // The editor's accent, not the Material default's purple.
               style: TextButton.styleFrom(
                 foregroundColor: EditorTheme.accent,
@@ -493,9 +501,13 @@ class _UiPreviewStripState extends State<UiPreviewStrip> {
     return session.screensByName[name];
   }
 
-  /// Closes the screen and opens it again, so its transition plays.
+  /// Closes the screen and opens it again, so its transition plays — the
+  /// copy Preview shows while previewing, never the document's own canvas.
   void _replayOpening(UiScreenDocument doc) {
-    final settings = doc.settings;
+    final settings =
+        session.previewCanvas?.getComponent<UiCanvasComponent>() ??
+        doc.settings;
+
     if (settings == null) return;
     settings
       ..visible = false

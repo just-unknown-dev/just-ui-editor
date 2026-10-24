@@ -6,9 +6,15 @@
 /// own widgets sit beside the built-in ones.
 library;
 
+import 'dart:math' as math;
+import 'dart:ui' as ui show Image;
 import 'dart:ui' show ImageFilter;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/gestures.dart'
+    show GestureRecognizer, TapGestureRecognizer;
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 
 import 'package:just_game_engine/just_game_engine.dart';
@@ -16,6 +22,7 @@ import '../logic/ui_actions.dart';
 import '../logic/ui_bindings.dart';
 import 'ui_navigator.dart';
 import '../text/ui_rich_text.dart';
+import '../text/ui_text_painter.dart';
 import '../text/ui_text_style.dart';
 import '../theme/ui_theme.dart';
 import 'ui_widgets.dart';
@@ -37,6 +44,7 @@ class UiLayer extends StatefulWidget {
     this.navigator,
     this.gameWorld,
     this.actionHost,
+    this.handlesBack = false,
   });
 
   /// Where the canvases are.
@@ -71,6 +79,12 @@ class UiLayer extends StatefulWidget {
   /// Only the editor passes this: a game has no use for it, and the marks
   /// cost a widget each.
   final UiNodeBoxes? nodes;
+
+  /// Whether the system's back — Android's back button and gesture, a
+  /// browser's back — closes the screen on top while one is open, rather
+  /// than leaving the app. The game's view of its screens says yes; an
+  /// editor showing a screen leaves it alone.
+  final bool handlesBack;
 
   @override
   State<UiLayer> createState() => UiLayerState();
@@ -173,6 +187,10 @@ class UiLayerState extends State<UiLayer> {
   /// Text a player is part-way through typing, kept between rebuilds.
   final Map<int, TextEditingController> _fields = {};
 
+  /// What each text's `[link=…]` runs listen to taps with, made again
+  /// whenever the text is built and let go of with it.
+  final Map<int, List<TapGestureRecognizer>> _links = {};
+
   /// Which screens are open: the one it was given, or its own.
   late final UiNavigator navigator =
       widget.navigator ?? UiNavigator(widget.world);
@@ -229,20 +247,57 @@ class UiLayerState extends State<UiLayer> {
     // A screen may have been opened or closed by something other than an
     // action — the editor, a system, a scene that loaded with it open.
     navigator.adopt();
+    _walk(_canvases);
     final structure = _structure();
     if (structure != _lastStructure) {
       _lastStructure = structure;
       _prune();
       setState(() {});
     }
-    _refreshAll();
+    for (final entity in _walked) {
+      _refresh(entity);
+    }
   }
 
-  /// A number that changes when the tree's *shape* does.
+  /// Every canvas drawn and everything under each, in order: the tree,
+  /// walked once a sync and read from there.
+  final List<Entity> _walked = [];
+
+  void _walk(List<Entity> canvases) {
+    _walked.clear();
+    for (final canvas in canvases) {
+      _walked.add(canvas);
+      _walkBelow(canvas, 0);
+    }
+  }
+
+  void _walkBelow(Entity entity, int depth) {
+    // A UI tree deeper than this is a mistake (or a loop), not a use case.
+    if (depth > 64) return;
+    final children = entity.getComponent<ChildrenComponent>();
+    if (children == null) return;
+    for (final id in children.childIds) {
+      final child = widget.world.getEntity(id);
+      if (child == null || !child.isActive) continue;
+      _walked.add(child);
+      _walkBelow(child, depth + 1);
+    }
+  }
+
+  /// A number that changes when the tree's *shape* does — read from what
+  /// [_walk] found.
   int _structure() {
     final parts = <Object?>[for (final screen in navigator.stack) screen.id];
-    for (final entity in _canvases) {
-      final canvas = entity.getComponent<UiCanvasComponent>()!;
+    for (final entity in _walked) {
+      final canvas = entity.getComponent<UiCanvasComponent>();
+      if (canvas == null) {
+        parts
+          ..add(entity.id)
+          // Whether it is there at all is decided by its parent's layout,
+          // not by its own node — so a shown or hidden child reshapes.
+          ..add(entity.getComponent<UiSlotComponent>()?.visible);
+        continue;
+      }
       parts
         ..add(entity.id)
         ..add(canvas.revision)
@@ -255,24 +310,8 @@ class UiLayerState extends State<UiLayer> {
         ..add(canvas.isScreen)
         ..add(canvas.modal)
         ..add(canvas.transition);
-      for (final child in _descendants(entity)) {
-        parts
-          ..add(child.id)
-          // Whether it is there at all is decided by its parent's layout,
-          // not by its own node — so a shown or hidden child reshapes.
-          ..add(child.getComponent<UiSlotComponent>()?.visible);
-      }
     }
     return Object.hashAll(parts);
-  }
-
-  void _refreshAll() {
-    for (final canvas in _canvases) {
-      _refresh(canvas);
-      for (final child in _descendants(canvas)) {
-        _refresh(child);
-      }
-    }
   }
 
   /// Wakes [entity]'s node if it now looks different. A node nothing has
@@ -287,12 +326,7 @@ class UiLayerState extends State<UiLayer> {
 
   /// Forgets the nodes of entities that have gone.
   void _prune() {
-    final live = <int>{
-      for (final canvas in _canvases) ...[
-        canvas.id,
-        for (final child in _descendants(canvas)) child.id,
-      ],
-    };
+    final live = <int>{for (final entity in _walked) entity.id};
     _nodes.removeWhere((id, node) {
       if (live.contains(id)) return false;
       node.dispose();
@@ -301,6 +335,13 @@ class UiLayerState extends State<UiLayer> {
     _fields.removeWhere((id, controller) {
       if (live.contains(id)) return false;
       controller.dispose();
+      return true;
+    });
+    _links.removeWhere((id, recognizers) {
+      if (live.contains(id)) return false;
+      for (final recognizer in recognizers) {
+        recognizer.dispose();
+      }
       return true;
     });
   }
@@ -327,6 +368,9 @@ class UiLayerState extends State<UiLayer> {
         ..add(text.resolve(self: entity, localise: widget.localise).plain)
         ..add(text.revealSpeed > 0 ? text.revealed.floor() : 0)
         ..add(text.align)
+        ..add(text.overflow)
+        ..add(text.styleRole)
+        ..add(text.minFontSize)
         ..add(text.maxLines);
     }
     if (entity.getComponent<UiSlotComponent>() case final slot?) {
@@ -362,11 +406,16 @@ class UiLayerState extends State<UiLayer> {
         ..add(panel.radius)
         ..add(panel.shadowBlur)
         ..add(panel.blur)
-        ..add(panel.image);
+        ..add(panel.image)
+        ..add(panel.nineSlice)
+        ..add(panel.gradient == null ? null : Object.hashAll(panel.gradient!));
     }
     if (entity.getComponent<ButtonComponent>() case final button?) {
       parts
-        ..add(button.label)
+        // As read: a label that reads the game shows the new number.
+        ..add(_words(button.label, entity))
+        ..add(button.labelStyle)
+        ..add(button.styleRole)
         ..add(button.state)
         ..add(button.colorRole)
         ..add(button.color)
@@ -391,23 +440,33 @@ class UiLayerState extends State<UiLayer> {
     if (entity.getComponent<UiToggleComponent>() case final toggle?) {
       parts
         ..add(toggle.value)
-        ..add(toggle.label);
+        ..add(_words(toggle.label, entity));
+      if (toggle.binding.isNotEmpty) {
+        parts.add(UiBindings.readNumber(toggle.binding, self: entity));
+      }
     }
     if (entity.getComponent<UiSliderComponent>() case final slider?) {
       parts
         ..add(slider.value)
         ..add(slider.min)
-        ..add(slider.max);
+        ..add(slider.max)
+        ..add(slider.steps)
+        ..add(_words(slider.label, entity));
+      if (slider.binding.isNotEmpty) {
+        parts.add(UiBindings.readNumber(slider.binding, self: entity));
+      }
     }
     if (entity.getComponent<UiTextFieldComponent>() case final field?) {
       parts
         ..add(field.value)
-        ..add(field.hint)
-        ..add(field.obscure);
+        ..add(_words(field.hint, entity))
+        ..add(field.obscure)
+        ..add(field.maxLength);
     }
     if (entity.getComponent<UiDropdownComponent>() case final dropdown?) {
       parts
         ..add(dropdown.value)
+        ..add(_words(dropdown.label, entity))
         ..addAll(dropdown.options);
     }
     if (entity.getComponent<UiCustomComponent>() case final custom?) {
@@ -415,7 +474,8 @@ class UiLayerState extends State<UiLayer> {
       for (final entry in custom.props.entries) {
         parts
           ..add(entry.key)
-          ..add(entry.value);
+          // As a widget reads it (`context.text`), bindings filled in.
+          ..add(UiBindings.interpolate(entry.value, self: entity));
       }
     }
     if (entity.getComponent<UiSpacerComponent>() case final spacer?) {
@@ -423,8 +483,36 @@ class UiLayerState extends State<UiLayer> {
         ..add(spacer.size)
         ..add(spacer.expand);
     }
+    // Where its children sit: a parent builds that (a `Positioned`, a
+    // flex), so a child moved or resized on its own — by a timeline, by
+    // code — rebuilds the parent, or it would be drawn where it was.
+    for (final child in _childrenOf(entity)) {
+      parts.add(_placementOf(child));
+    }
     return Object.hashAll(parts);
   }
+
+  /// What of [entity]'s slot its parent places it by.
+  static Object? _placementOf(Entity entity) {
+    final slot = entity.getComponent<UiSlotComponent>();
+    if (slot == null) return null;
+    return Object.hash(
+      slot.visible,
+      slot.mode,
+      slot.anchor,
+      slot.pivot,
+      slot.offset,
+      slot.size,
+      slot.margin,
+      slot.flex,
+      slot.alignSelf,
+    );
+  }
+
+  /// [source] as a player reads it: a `@key` in this game's language, with
+  /// its bindings filled in.
+  String _words(String source, Entity entity) =>
+      UiBindings.resolveText(source, self: entity, localise: widget.localise);
 
   @override
   void dispose() {
@@ -436,6 +524,12 @@ class UiLayerState extends State<UiLayer> {
       controller.dispose();
     }
     _fields.clear();
+    for (final recognizers in _links.values) {
+      for (final recognizer in recognizers) {
+        recognizer.dispose();
+      }
+    }
+    _links.clear();
     _heroes.dispose();
     super.dispose();
   }
@@ -466,13 +560,6 @@ class UiLayerState extends State<UiLayer> {
     ];
   }
 
-  Iterable<Entity> _descendants(Entity entity) sync* {
-    for (final child in _childrenOf(entity)) {
-      yield child;
-      yield* _descendants(child);
-    }
-  }
-
   UiTheme _themeOf(UiCanvasComponent canvas) {
     if (widget.themeOverride case final theme?) return theme;
     final path = canvas.theme;
@@ -484,7 +571,9 @@ class UiLayerState extends State<UiLayer> {
     if (_themesAsked.add(path)) {
       UiThemes.load(path).then((_) {
         _themesAsked.remove(path);
-        if (!mounted) return;
+        // One that would not load is the fallback until it is evicted,
+        // which is what is drawn already: nothing to rebuild.
+        if (!mounted || UiThemes.failed(path)) return;
         markDirty();
         setState(() {});
       });
@@ -496,11 +585,13 @@ class UiLayerState extends State<UiLayer> {
   Widget build(BuildContext context) {
     // What is about to be on screen, so the first sync after it has
     // nothing to do.
+    final canvases = _canvases;
+    _walk(canvases);
     _lastStructure = _structure();
 
     final open = navigator.stack;
     final layers = [
-      for (final entity in _canvases)
+      for (final entity in canvases)
         if (!entity.getComponent<UiCanvasComponent>()!.isScreen) entity,
     ];
     final hasScreens = widget.world
@@ -523,10 +614,23 @@ class UiLayerState extends State<UiLayer> {
   /// There is always a page underneath them that draws nothing, so the
   /// last screen closing animates out rather than blinking away.
   Widget _screens(List<Entity> open) {
-    return HeroControllerScope(
+    Widget screens = HeroControllerScope(
       controller: _heroes,
       child: _screenNavigator(open),
     );
+    if (widget.handlesBack) {
+      // A nested navigator never hears the system's back by itself: without
+      // this, Android's back with the pause menu open left the game.
+      screens = NavigatorPopHandler<Object?>(
+        enabled: open.isNotEmpty,
+        onPopWithResult: (_) {
+          navigator.back();
+          markDirty();
+        },
+        child: screens,
+      );
+    }
+    return screens;
   }
 
   Widget _screenNavigator(List<Entity> open) {
@@ -541,8 +645,9 @@ class UiLayerState extends State<UiLayer> {
           ),
       ],
       onDidRemovePage: (page) {
-        // The system popped it — Android's back gesture, a `Navigator.pop`
-        // from inside a screen. Keep the scene in step.
+        // Popped from inside — a `Navigator.pop` in a game's own widget,
+        // the system's back through [UiLayer.handlesBack]. Keep the scene
+        // in step.
         if (page is _UiScreenPage) {
           navigator.show(page.entity.name ?? '', false);
           markDirty();
@@ -558,7 +663,10 @@ class UiLayerState extends State<UiLayer> {
   /// One canvas: scaled to the screen, kept clear of notches, themed, and
   /// walkable with the keyboard.
   Widget _canvasContent(Entity entity) {
-    final canvas = entity.getComponent<UiCanvasComponent>()!;
+    // Gone: the screens were reset (a restart) or reloaded while this one
+    // was still on its way out, and its route builds it once more.
+    final canvas = entity.getComponent<UiCanvasComponent>();
+    if (canvas == null) return const SizedBox.shrink();
     final theme = _themeOf(canvas);
     return Theme(
       data: theme.toThemeData(),
@@ -594,56 +702,75 @@ class UiLayerState extends State<UiLayer> {
                   },
                 ),
               },
-              // Inside the safe area when the canvas keeps to it, so the scale
-              // comes from the room there really is. Measured on the whole
-              // screen and then squeezed in, a canvas was scaled more one way
-              // than the other: squashed on any phone with a notch.
-              child: _inSafeArea(
-                canvas.safeArea,
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final screen = constraints.biggest;
-                    final scale = canvas.scaleMode.scaleFor(
-                      canvas.designSize,
-                      screen,
-                    );
-                    // Everything under a canvas is laid out in design pixels
-                    // and then scaled, so a HUD looks the same everywhere.
-                    final design = scale == 1
-                        ? screen
-                        : Size(screen.width / scale, screen.height / scale);
-                    Widget child = SizedBox(
-                      width: design.width,
-                      height: design.height,
-                      child: _children(entity, theme, design),
-                    );
-                    // So an editor can find the canvas itself — its edges
-                    // and centre are what a top-level element snaps to.
-                    if (widget.nodes case final nodes?) {
-                      child = _UiNodeMark(
-                        id: entity.id,
-                        nodes: nodes,
-                        child: child,
+              // Nearer the focus than the arrows above: in a text field the
+              // arrows move the caret, as they do everywhere else.
+              child: DefaultTextEditingShortcuts(
+                // Inside the safe area when the canvas keeps to it, so the
+                // scale comes from the room there really is. Measured on the
+                // whole screen and then squeezed in, a canvas was scaled
+                // more one way than the other: squashed on any phone with a
+                // notch.
+                child: _inSafeArea(
+                  canvas.safeArea,
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final screen = constraints.biggest;
+                      // No room — a window minimised, a view folded away —
+                      // or no limit: nothing to scale to.
+                      if (!screen.isFinite || screen.isEmpty) {
+                        return const SizedBox.shrink();
+                      }
+                      final scale = canvas.scaleMode.scaleFor(
+                        canvas.designSize,
+                        screen,
                       );
-                    }
-                    if (scale != 1) {
-                      // `FittedBox` rather than `Transform.scale`: a
-                      // transform leaves the *layout* box at the design
-                      // size, so a 1920-wide HUD on a 400-wide screen drew
-                      // in the right place but could not be clicked —
-                      // everything above it hit-tested against a box the
-                      // size of the design. This one is the size of the
-                      // screen, and since the design is the screen divided
-                      // by the scale, filling it is the same uniform scale
-                      // it always was.
-                      child = FittedBox(
-                        fit: BoxFit.fill,
-                        alignment: Alignment.topLeft,
-                        child: child,
+                      if (!scale.isFinite || scale <= 0) {
+                        return const SizedBox.shrink();
+                      }
+                      // Everything under a canvas is laid out in design pixels
+                      // and then scaled, so a HUD looks the same everywhere.
+                      final design = scale == 1
+                          ? screen
+                          : Size(screen.width / scale, screen.height / scale);
+                      Widget child = SizedBox(
+                        width: design.width,
+                        height: design.height,
+                        // The canvas's own node: a child placed on it that
+                        // moves on its own rebuilds where it is placed.
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: _notifierFor(entity),
+                          builder: (context, _, _) =>
+                              _children(entity, theme, design),
+                        ),
                       );
-                    }
-                    return child;
-                  },
+                      // So an editor can find the canvas itself — its edges
+                      // and centre are what a top-level element snaps to.
+                      if (widget.nodes case final nodes?) {
+                        child = _UiNodeMark(
+                          id: entity.id,
+                          nodes: nodes,
+                          child: child,
+                        );
+                      }
+                      if (scale != 1) {
+                        // `FittedBox` rather than `Transform.scale`: a
+                        // transform leaves the *layout* box at the design
+                        // size, so a 1920-wide HUD on a 400-wide screen drew
+                        // in the right place but could not be clicked —
+                        // everything above it hit-tested against a box the
+                        // size of the design. This one is the size of the
+                        // screen, and since the design is the screen divided
+                        // by the scale, filling it is the same uniform scale
+                        // it always was.
+                        child = FittedBox(
+                          fit: BoxFit.fill,
+                          alignment: Alignment.topLeft,
+                          child: child,
+                        );
+                      }
+                      return child;
+                    },
+                  ),
                 ),
               ),
             ),
@@ -726,7 +853,15 @@ class UiLayerState extends State<UiLayer> {
   /// The entity's own element, before its slot and its panel.
   Widget _content(Entity entity, UiTheme theme) {
     final children = _childrenOf(entity);
-    final built = [for (final child in children) _flow(child, theme)];
+    final layout = entity.getComponent<UiLayoutComponent>();
+    // A stack places its own; for the rest, a child's flex means something
+    // only in a row or a column.
+    final built = layout?.kind == UiLayoutKind.stack
+        ? const <Widget>[]
+        : [
+            for (final child in children)
+              _flow(child, theme, inFlex: layout?.kind.isFlex ?? false),
+          ];
 
     final custom = entity.getComponent<UiCustomComponent>();
     if (custom != null) {
@@ -744,7 +879,6 @@ class UiLayerState extends State<UiLayer> {
           const SizedBox.shrink();
     }
 
-    final layout = entity.getComponent<UiLayoutComponent>();
     if (layout != null) return _layout(layout, theme, built, entity);
 
     final text = entity.getComponent<TextComponent>();
@@ -773,7 +907,8 @@ class UiLayerState extends State<UiLayer> {
 
     final spacer = entity.getComponent<UiSpacerComponent>();
     if (spacer != null) {
-      return spacer.expand
+      // Taking what is left only means something in a row or a column.
+      return spacer.expand && _inFlex(entity)
           ? const Spacer()
           : SizedBox(width: spacer.size, height: spacer.size);
     }
@@ -783,9 +918,17 @@ class UiLayerState extends State<UiLayer> {
     return built.length == 1 ? built.first : Stack(children: built);
   }
 
+  /// Whether [entity] sits in a row or a column.
+  bool _inFlex(Entity entity) {
+    final parentId = entity.getComponent<ParentComponent>()?.parentId;
+    final parent = parentId == null ? null : widget.world.getEntity(parentId);
+    return parent?.getComponent<UiLayoutComponent>()?.kind.isFlex ?? false;
+  }
+
   /// A child inside a row, a column or another container — with its flex
-  /// and alignment applied.
-  Widget _flow(Entity entity, UiTheme theme) {
+  /// (in a row or a column; anywhere else its slot's size) and alignment
+  /// applied.
+  Widget _flow(Entity entity, UiTheme theme, {required bool inFlex}) {
     final slot = entity.getComponent<UiSlotComponent>();
     final built = buildEntity(entity, theme);
     if (slot == null) return built;
@@ -798,7 +941,9 @@ class UiLayerState extends State<UiLayer> {
         child: built,
       );
     }
-    if (slot.flex > 0) return Expanded(flex: slot.flex, child: built);
+    if (slot.flex > 0 && inFlex) {
+      return Expanded(flex: slot.flex, child: built);
+    }
     // The size the slot says — which the inspector shows and the handles
     // drag — and not whatever the content happens to want. A parent that
     // stretches its children, or `alignSelf: stretch`, still wins across.
@@ -1030,7 +1175,7 @@ class UiLayerState extends State<UiLayer> {
         children: [
           Flexible(
             child: Text(
-              UiBindings.interpolate(toggle.label, self: entity),
+              _words(toggle.label, entity),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -1042,23 +1187,34 @@ class UiLayerState extends State<UiLayer> {
   }
 
   Widget _slider(Entity entity, UiSliderComponent slider, UiTheme theme) {
-    final value = slider.binding.isEmpty
+    // A range saved the wrong way round is read the right way round; one
+    // that is not a range at all is 0–1, and one with no width is shown
+    // but cannot be slid.
+    var low = slider.min, high = slider.max;
+    if (!low.isFinite || !high.isFinite) (low, high) = (0.0, 1.0);
+    if (low > high) (low, high) = (high, low);
+    final read = slider.binding.isEmpty
         ? slider.value
         : (UiBindings.readNumber(slider.binding, self: entity) ?? slider.value);
+    final value = read.isNaN ? low : read.clamp(low, high).toDouble();
+    final label = _words(slider.label, entity);
+    final slides = high > low;
     return _focusHeard(
       theme,
       Slider(
-        value: value.clamp(slider.min, slider.max),
-        min: slider.min,
-        max: slider.max,
-        divisions: slider.steps > 0 ? slider.steps : null,
+        value: value,
+        min: low,
+        max: high,
+        divisions: slider.steps > 0 && slides ? slider.steps : null,
         autofocus: _takesInitialFocus(entity),
-        label: slider.label.isEmpty ? null : slider.label,
-        onChanged: (next) {
-          slider.value = next;
-          _run(entity, slider.onChanged, value: next);
-          _refresh(entity);
-        },
+        label: label.isEmpty ? null : label,
+        onChanged: slides
+            ? (next) {
+                slider.value = next;
+                _run(entity, slider.onChanged, value: next);
+                _refresh(entity);
+              }
+            : null,
       ),
     );
   }
@@ -1084,7 +1240,7 @@ class UiLayerState extends State<UiLayer> {
         obscureText: field.obscure,
         maxLength: field.maxLength > 0 ? field.maxLength : null,
         decoration: InputDecoration(
-          hintText: field.hint.isEmpty ? null : field.hint,
+          hintText: field.hint.isEmpty ? null : _words(field.hint, entity),
           counterText: '',
         ),
         onChanged: (next) {
@@ -1100,9 +1256,9 @@ class UiLayerState extends State<UiLayer> {
   }
 
   Widget _dropdown(Entity entity, UiDropdownComponent dropdown, UiTheme theme) {
-    final options = dropdown.options.isEmpty
-        ? <String>[dropdown.value]
-        : dropdown.options;
+    // One of each: a menu shows a choice once, and Flutter refuses two.
+    final options = {...dropdown.options}.toList();
+    if (options.isEmpty) options.add(dropdown.value);
     final value = options.contains(dropdown.value)
         ? dropdown.value
         : options.first;
@@ -1112,7 +1268,9 @@ class UiLayerState extends State<UiLayer> {
         value: value,
         isExpanded: true,
         autofocus: _takesInitialFocus(entity),
-        hint: dropdown.label.isEmpty ? null : Text(dropdown.label),
+        hint: dropdown.label.isEmpty
+            ? null
+            : Text(_words(dropdown.label, entity)),
         items: [
           for (final option in options)
             DropdownMenuItem<String>(value: option, child: Text(option)),
@@ -1128,21 +1286,40 @@ class UiLayerState extends State<UiLayer> {
     );
   }
 
+  /// A panel, bottom up: its shadow, its fill — a colour, a gradient or a
+  /// picture — then its edge, then what it holds.
   Widget _panel(UiPanelComponent panel, UiTheme theme, Widget child) {
-    final color = panel.colorUnder(theme);
+    final radius = BorderRadius.circular(panel.radius);
+    final colors = panel.gradient;
+    final swept = colors != null && colors.length > 1;
+    final pictured = panel.image.isNotEmpty;
+    final border = panel.borderWidth > 0
+        ? Border.all(
+            color: panel.borderColorUnder(theme),
+            width: panel.borderWidth,
+          )
+        : null;
+    if (pictured && border != null) {
+      child = DecoratedBox(
+        position: DecorationPosition.foreground,
+        decoration: BoxDecoration(borderRadius: radius, border: border),
+        child: child,
+      );
+    }
+    if (pictured) {
+      child = _UiPanelImage(
+        path: panel.image,
+        nineSlice: panel.nineSlice,
+        radius: panel.radius,
+        child: child,
+      );
+    }
     Widget result = DecoratedBox(
       decoration: BoxDecoration(
-        color: panel.gradient == null ? color : null,
-        gradient: panel.gradient != null && panel.gradient!.length > 1
-            ? LinearGradient(colors: panel.gradient!)
-            : null,
-        borderRadius: BorderRadius.circular(panel.radius),
-        border: panel.borderWidth > 0
-            ? Border.all(
-                color: panel.borderColorUnder(theme),
-                width: panel.borderWidth,
-              )
-            : null,
+        color: swept || pictured ? null : panel.colorUnder(theme),
+        gradient: swept ? LinearGradient(colors: colors) : null,
+        borderRadius: radius,
+        border: pictured ? null : border,
         boxShadow: panel.shadowBlur > 0
             ? [
                 BoxShadow(
@@ -1167,25 +1344,69 @@ class UiLayerState extends State<UiLayer> {
     return result;
   }
 
+  /// A text: Flutter's own `Text` where it can — icons as widgets, links
+  /// tappable — and the canvas painter where only the painter can: moving
+  /// and colour-cycling letters, an outline, a gradient, or shrinking to
+  /// fit. A painted text's links cannot be tapped.
   Widget _text(Entity entity, TextComponent text, UiTheme theme) {
     final resolved = text.resolve(self: entity, localise: widget.localise);
     final shown = text.revealSpeed > 0
         ? resolved.take(text.revealed.floor())
         : resolved;
     final style = text.styleUnder(theme);
+    final alignment = switch (text.align) {
+      UiTextAlign.left => Alignment.centerLeft,
+      UiTextAlign.right => Alignment.centerRight,
+      _ => Alignment.center,
+    };
+    final look = style.over(UiTextStyle.fallback);
+    final painted =
+        shown.needsPainter ||
+        (look.gradient?.length ?? 0) > 1 ||
+        (look.outline?.isVisible ?? false) ||
+        text.overflow == UiTextOverflow.shrink;
+    if (painted) {
+      Widget drawn = _UiPaintedText(
+        text: shown,
+        style: style,
+        align: text.align,
+        overflow: text.overflow,
+        maxLines: text.maxLines,
+        minSize: text.minFontSize,
+      );
+      if (text.overflow == UiTextOverflow.clip) drawn = ClipRect(child: drawn);
+      return Align(alignment: alignment, child: drawn);
+    }
     return Align(
-      alignment: switch (text.align) {
-        UiTextAlign.left => Alignment.centerLeft,
-        UiTextAlign.right => Alignment.centerRight,
-        _ => Alignment.center,
-      },
+      alignment: alignment,
       child: Text.rich(
-        shown.toTextSpan(style),
+        shown.toTextSpan(
+          style,
+          widgets: true,
+          recognizerFor: _linksFor(entity),
+        ),
         textAlign: text.align.flutter,
         maxLines: text.maxLines,
         overflow: text.overflow.flutter,
       ),
     );
+  }
+
+  /// Makes what [entity]'s `[link=…]` runs are tapped with, letting go of
+  /// the ones its last build made.
+  GestureRecognizer? Function(UiTextSpan span) _linksFor(Entity entity) {
+    for (final old in _links.remove(entity.id) ?? const []) {
+      old.dispose();
+    }
+    return (span) {
+      final link = span.link;
+      if (link == null || link.isEmpty) return null;
+      final recognizer = TapGestureRecognizer()
+        ..onTap = () =>
+            _run(entity, UiActionList([UiActions.linkAction(link)]));
+      (_links[entity.id] ??= []).add(recognizer);
+      return recognizer;
+    };
   }
 
   Widget _button(
@@ -1194,9 +1415,7 @@ class UiLayerState extends State<UiLayer> {
     UiTheme theme,
     List<Widget> children,
   ) {
-    final label = UiRichText.parse(
-      UiBindings.interpolate(button.label, self: entity),
-    );
+    final label = UiRichText.parse(_words(button.label, entity));
     return _focusHeard(
       theme,
       FilledButton(
@@ -1224,21 +1443,32 @@ class UiLayerState extends State<UiLayer> {
         ),
         child: children.isNotEmpty
             ? (children.length == 1 ? children.first : Row(children: children))
-            : Text.rich(label.toTextSpan(button.labelStyleUnder(theme))),
+            : Text.rich(
+                label.toTextSpan(button.labelStyleUnder(theme), widgets: true),
+              ),
       ),
     );
   }
 
   Widget _image(UiImageComponent image) {
     if (image.path.isEmpty) return const SizedBox.shrink();
-    Widget result = Image.asset(
-      image.path,
-      fit: image.fit,
-      color: image.tint,
-      colorBlendMode: image.tint == null ? null : BlendMode.modulate,
-      // A picture that is not there must not take the interface down.
-      errorBuilder: (context, error, stack) => const SizedBox.shrink(),
-    );
+    Widget result = image.atlasRegion.isNotEmpty
+        // One region of an atlas, trimmed and turned frames put back.
+        ? _UiAtlasImage(
+            sprites: widget.world.context.sprites,
+            path: image.path,
+            region: image.atlasRegion,
+            fit: image.fit,
+            tint: image.tint,
+          )
+        : Image.asset(
+            image.path,
+            fit: image.fit,
+            color: image.tint,
+            colorBlendMode: image.tint == null ? null : BlendMode.modulate,
+            // A picture that is not there must not take the interface down.
+            errorBuilder: (context, error, stack) => const SizedBox.shrink(),
+          );
     if (image.opacity < 1) {
       result = Opacity(opacity: image.opacity.clamp(0.0, 1.0), child: result);
     }
@@ -1413,4 +1643,368 @@ class _UiScreenPage extends Page<void> {
       ),
     };
   }
+}
+
+/// Text the canvas painter draws in a screen: what Flutter's `Text` cannot
+/// do — letters that wave, shake or change colour, an outline, a gradient,
+/// shrinking to fit — with the same [UiTextPainter] world text uses, so a
+/// screen and the level agree.
+///
+/// Laid out at the room it is given and scaled with the player's text
+/// size. It animates itself, on its own ticker, only while something in it
+/// moves: nothing else about the screen rebuilds for it.
+class _UiPaintedText extends StatefulWidget {
+  const _UiPaintedText({
+    required this.text,
+    required this.style,
+    required this.align,
+    required this.overflow,
+    required this.maxLines,
+    required this.minSize,
+  });
+
+  final UiRichText text;
+  final UiTextStyle style;
+  final UiTextAlign align;
+  final UiTextOverflow overflow;
+  final int? maxLines;
+  final double minSize;
+
+  @override
+  State<_UiPaintedText> createState() => _UiPaintedTextState();
+}
+
+class _UiPaintedTextState extends State<_UiPaintedText>
+    with TickerProviderStateMixin {
+  final UiTextPainter _painter = UiTextPainter();
+  final ValueNotifier<double> _seconds = ValueNotifier(0);
+  Ticker? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTicker();
+  }
+
+  @override
+  void didUpdateWidget(_UiPaintedText old) {
+    super.didUpdateWidget(old);
+    _syncTicker();
+  }
+
+  void _syncTicker() {
+    if (widget.text.animates) {
+      _ticker ??= createTicker(
+        (elapsed) => _seconds.value = elapsed.inMicroseconds / 1e6,
+      )..start();
+    } else {
+      _ticker?.dispose();
+      _ticker = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.dispose();
+    _seconds.dispose();
+    _painter.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scaler = MediaQuery.textScalerOf(context);
+    return LayoutBuilder(
+      builder: (context, box) {
+        _painter
+          ..set(
+            text: widget.text,
+            style: widget.style,
+            textScaler: scaler,
+            layout: UiTextLayout(
+              align: widget.align,
+              overflow: widget.overflow,
+              maxWidth: box.maxWidth.isFinite ? box.maxWidth : null,
+              maxHeight: box.maxHeight.isFinite ? box.maxHeight : null,
+              maxLines: widget.maxLines,
+              minSize: widget.minSize,
+            ),
+          )
+          ..layout();
+        return Semantics(
+          label: widget.text.plain,
+          child: CustomPaint(
+            size: box.constrain(_painter.size),
+            painter: _UiTextPaint(_painter, _seconds),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _UiTextPaint extends CustomPainter {
+  _UiTextPaint(this.text, this.seconds) : super(repaint: seconds);
+
+  final UiTextPainter text;
+  final ValueListenable<double> seconds;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // From the top-left, as `Text` draws: what does not fit spills below.
+    final drawn = text.size;
+    text.paint(
+      canvas,
+      Offset(drawn.width / 2, drawn.height / 2),
+      animation: UiTextAnimation(seconds: seconds.value),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_UiTextPaint old) => true;
+}
+
+/// A panel's picture: stretched to fill it, or — with [nineSlice] — with
+/// only its middle stretched and its corners kept as drawn.
+///
+/// The slices are measured in the image's own pixels, so its size is read
+/// first; until it is in, the panel shows no picture.
+class _UiPanelImage extends StatefulWidget {
+  const _UiPanelImage({
+    required this.path,
+    required this.nineSlice,
+    required this.radius,
+    required this.child,
+  });
+
+  final String path;
+  final EdgeInsets nineSlice;
+  final double radius;
+  final Widget child;
+
+  @override
+  State<_UiPanelImage> createState() => _UiPanelImageState();
+}
+
+class _UiPanelImageState extends State<_UiPanelImage> {
+  ImageStream? _stream;
+  ImageStreamListener? _listener;
+  Size? _size;
+
+  bool get _sliced => widget.nineSlice != EdgeInsets.zero;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _resolve();
+  }
+
+  @override
+  void didUpdateWidget(_UiPanelImage old) {
+    super.didUpdateWidget(old);
+    if (old.path != widget.path) {
+      _size = null;
+      _resolve();
+    }
+  }
+
+  void _resolve() {
+    if (!_sliced) return;
+    final stream = AssetImage(
+      widget.path,
+    ).resolve(createLocalImageConfiguration(context));
+    if (stream.key == _stream?.key) return;
+    _stop();
+    final listener = ImageStreamListener(
+      (info, _) {
+        final size = Size(
+          info.image.width.toDouble(),
+          info.image.height.toDouble(),
+        );
+        info.dispose();
+        if (mounted && size != _size) setState(() => _size = size);
+      },
+      // A picture that is not there leaves the panel without one.
+      onError: (_, _) {},
+    );
+    _stream = stream..addListener(listener);
+    _listener = listener;
+  }
+
+  void _stop() {
+    final listener = _listener;
+    if (listener != null) _stream?.removeListener(listener);
+    _stream = null;
+    _listener = null;
+  }
+
+  @override
+  void dispose() {
+    _stop();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Rect? centre;
+    if (_sliced) {
+      final size = _size;
+      if (size == null) return widget.child;
+      final slice = widget.nineSlice;
+      final rect = Rect.fromLTRB(
+        slice.left,
+        slice.top,
+        size.width - slice.right,
+        size.height - slice.bottom,
+      );
+      // Slices that meet or cross leave nothing to stretch: stretch it all.
+      if (rect.width > 0 && rect.height > 0) centre = rect;
+    }
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(widget.radius),
+        image: DecorationImage(
+          image: AssetImage(widget.path),
+          fit: BoxFit.fill,
+          centerSlice: centre,
+          onError: (_, _) {},
+        ),
+      ),
+      child: widget.child,
+    );
+  }
+}
+
+/// One named region of a sprite atlas, fitted into the room it is given.
+class _UiAtlasImage extends StatefulWidget {
+  const _UiAtlasImage({
+    required this.sprites,
+    required this.path,
+    required this.region,
+    required this.fit,
+    this.tint,
+  });
+
+  final SpriteAssetLoader sprites;
+  final String path;
+  final String region;
+  final BoxFit fit;
+  final Color? tint;
+
+  @override
+  State<_UiAtlasImage> createState() => _UiAtlasImageState();
+}
+
+class _UiAtlasImageState extends State<_UiAtlasImage> {
+  SpriteAtlas? _atlas;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(_UiAtlasImage old) {
+    super.didUpdateWidget(old);
+    if (old.path != widget.path || !identical(old.sprites, widget.sprites)) {
+      _load();
+    }
+  }
+
+  void _load() {
+    final path = widget.path;
+    widget.sprites.loadAtlas(path).then(
+      (atlas) {
+        if (mounted && widget.path == path) setState(() => _atlas = atlas);
+      },
+      // An atlas that is not there leaves an empty space.
+      onError: (Object _) {},
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final atlas = _atlas;
+    if (atlas == null || !atlas.regionNames.contains(widget.region)) {
+      return const SizedBox.shrink();
+    }
+    final region = atlas.requireRegion(widget.region);
+    final image = atlas.pages[region.pageIndex].image;
+    if (image == null) return const SizedBox.shrink();
+    return LayoutBuilder(
+      builder: (context, box) => CustomPaint(
+        size: box.hasBoundedWidth && box.hasBoundedHeight
+            ? box.biggest
+            : box.constrain(region.sourceSize),
+        painter: _UiRegionPaint(image, region, widget.fit, widget.tint),
+      ),
+    );
+  }
+}
+
+class _UiRegionPaint extends CustomPainter {
+  _UiRegionPaint(this.image, this.region, this.fit, this.tint);
+
+  final ui.Image image;
+  final SpriteRegion region;
+  final BoxFit fit;
+  final Color? tint;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final box = region.sourceSize;
+    if (box.isEmpty || size.isEmpty) return;
+    final fitted = applyBoxFit(fit, box, size);
+    final into = Alignment.center.inscribe(
+      fitted.destination,
+      Offset.zero & size,
+    );
+    final from = Alignment.center.inscribe(fitted.source, Offset.zero & box);
+    final sx = into.width / from.width, sy = into.height / from.height;
+    final paint = Paint()
+      ..filterQuality = FilterQuality.medium
+      ..colorFilter = tint == null
+          ? null
+          : ColorFilter.mode(tint!, BlendMode.modulate);
+    canvas
+      ..save()
+      ..clipRect(into)
+      ..translate(into.left - from.left * sx, into.top - from.top * sy)
+      ..scale(sx, sy);
+    // The frame sits in its untrimmed box where the exporter cut it from,
+    // and one stored turned 90° clockwise is turned back.
+    final source = AtlasRegionSprite.textureRectOf(region);
+    final dest = Rect.fromLTWH(
+      region.spriteSourceOffset.dx,
+      region.spriteSourceOffset.dy,
+      region.frame.width,
+      region.frame.height,
+    );
+    if (region.rotated) {
+      canvas
+        ..translate(dest.center.dx, dest.center.dy)
+        ..rotate(-math.pi / 2)
+        ..drawImageRect(
+          image,
+          source,
+          Rect.fromCenter(
+            center: Offset.zero,
+            width: dest.height,
+            height: dest.width,
+          ),
+          paint,
+        );
+    } else {
+      canvas.drawImageRect(image, source, dest, paint);
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_UiRegionPaint old) =>
+      !identical(old.image, image) ||
+      !identical(old.region, region) ||
+      old.fit != fit ||
+      old.tint != tint;
 }

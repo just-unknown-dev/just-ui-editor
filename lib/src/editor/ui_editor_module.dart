@@ -2,11 +2,11 @@
 library;
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:just_game_engine/just_game_engine.dart';
+import 'package:just_editor_core/io.dart' show Directory;
 import 'package:just_editor_core/just_editor_core.dart';
 
 import '../runtime/components/button_component.dart';
@@ -18,6 +18,8 @@ import '../runtime/screens/ui_screen_manifest.dart';
 import '../runtime/screens/ui_screens_layer.dart';
 import '../runtime/text/ui_fonts.dart';
 import '../runtime/theme/ui_theme.dart';
+import '../runtime/theme/ui_world_style.dart';
+
 import 'inspector/ui_extras.dart';
 import 'inspector/ui_field_builders.dart';
 import 'project/ui_level_screens.dart';
@@ -131,14 +133,26 @@ class UiEditorModule extends EditorModule {
   /// Moves every screen still inside the open level out into files of its
   /// own on the game's list (see [UiLevelScreens.moveOut]), and says what
   /// went where in the editor's log.
+  ///
+  /// Nothing moves while the game's screen list does not read: the log
+  /// says why, and the level is left as it is.
   List<UiMovedScreen> moveScreensOut(EditorScope scope) {
-    final moved = UiLevelScreens.moveOut(
-      world: scope.world,
-      sceneState: scope.sceneState,
-      history: scope.history,
-      codec: scope.codec,
-      project: project,
-    );
+    final List<UiMovedScreen> moved;
+    try {
+      moved = UiLevelScreens.moveOut(
+        world: scope.world,
+        sceneState: scope.sceneState,
+        history: scope.history,
+        codec: scope.codec,
+        project: project,
+      );
+    } on FormatException catch (error) {
+      scope.log.log(
+        'The screens were not moved out of the level: ${error.message}',
+        source: 'interface',
+      );
+      return const [];
+    }
     if (moved.isEmpty) return moved;
     for (final m in moved) {
       scope.log.log(
@@ -149,7 +163,11 @@ class UiEditorModule extends EditorModule {
         source: 'interface',
       );
     }
-    onAssetChanged(UiScreenManifest.defaultPath);
+    // The files are new: the Assets dock and the running game read them.
+    scope.reloadAssets([
+      for (final m in moved) m.path,
+      UiScreenManifest.defaultPath,
+    ]);
     return moved;
   }
 
@@ -234,19 +252,71 @@ class UiEditorModule extends EditorModule {
   @override
   void onRegister(EditorModuleContext context) {
     _scope = context.scope;
-    // Themes and fonts from the project's files, not the bundle: saved a
-    // moment ago, shown without a rebuild.
-    final files = project;
-    UiThemes.loader = files.loadTheme;
-    UiFonts.read = files.fontData;
+    _readFromProject();
     unawaited(_reloadFonts());
+    unawaited(_styleLevelText());
     // Authoring shows the level, not the game's screens over it.
     _scope?.engine?.layers.setEnabled(UiScreensLayer.layerId, false);
   }
 
-  Future<void> _reloadFonts([String? path]) async {
+  /// What [onRegister] pointed `UiThemes` and `UiFonts` at, so [dispose]
+  /// puts back only what is still this module's.
+  Future<UiTheme> Function(String path)? _themeLoader;
+  Future<ByteData> Function(String path)? _fontReader;
+
+  /// Themes and fonts from the project's files, not the bundle: saved a
+  /// moment ago, shown without a rebuild.
+  void _readFromProject() {
+    final files = project;
+    UiThemes.loader = _themeLoader = files.loadTheme;
+    UiFonts.read = _fontReader = files.fontData;
+  }
+
+  /// After a hot reload: the loaders handed out again, from the code as it
+  /// is now.
+  @override
+  void onReassemble(EditorModuleContext context) {
+    _scope = context.scope;
+    _readFromProject();
+  }
+
+  /// The editor is going: themes and fonts are the bundle's again, unless
+  /// something else has taken them over since.
+  @override
+  void dispose() {
+    if (_themeLoader != null && UiThemes.loader == _themeLoader) {
+      UiThemes.useBundle();
+    }
+    if (_fontReader != null && UiFonts.read == _fontReader) {
+      UiFonts.read = rootBundle.load;
+    }
+    _themeLoader = null;
+    _fontReader = null;
+    _scope = null;
+  }
+
+  /// Every font in the project, read again. All of them, not just one that
+  /// changed: forgetting what was loaded forgets every family, and one of
+  /// several files of a family reloaded alone would be that family's only
+  /// face.
+  Future<void> _reloadFonts() async {
     UiFonts.reset();
-    await UiFonts.loadAll(path != null ? [path] : project.fontFiles());
+    await UiFonts.loadAll(project.fontFiles());
+  }
+
+  /// The level's own text and buttons in the game's theme — the screen
+  /// list's — as the game draws them, rather than the built-in one; none
+  /// when the list names none.
+  Future<void> _styleLevelText() async {
+    final engine = _scope?.engine;
+    if (engine == null) return;
+    final path = project.readManifest().theme;
+    final theme = path == null ? null : await UiThemes.load(path);
+    // Gone, or another asked for, while the theme was read.
+    if (_scope?.engine != engine || project.readManifest().theme != path) {
+      return;
+    }
+    UiWorldStyle.of(engine.context).theme = theme;
   }
 
   @override
@@ -255,12 +325,16 @@ class UiEditorModule extends EditorModule {
     if (lower.endsWith('.uitheme.json')) {
       UiThemes.evict(path);
       unawaited(UiThemes.load(path));
+      if (project.readManifest().theme == path) {
+        unawaited(_styleLevelText());
+      }
     } else if (lower.endsWith('.ttf') ||
         lower.endsWith('.otf') ||
         lower.endsWith('.ttc')) {
-      unawaited(_reloadFonts(path));
+      unawaited(_reloadFonts());
     } else if (lower.endsWith('.${UiDocument.extension}') ||
         lower.endsWith('screens.json')) {
+      if (lower.endsWith('screens.json')) unawaited(_styleLevelText());
       final engine = _scope?.engine;
       final installed = engine == null ? null : JustGameUi.of(engine);
       if (installed != null) {
@@ -275,23 +349,61 @@ class UiEditorModule extends EditorModule {
   }
 
   @override
-  void onPlayStateChanged(bool playing) => unawaited(_follow(playing));
+  void onPlayStateChanged(bool playing) {
+    _playing = playing;
+    unawaited(_follow(playing));
+  }
 
-  /// The game's screens while a play-test runs, as the game would show
-  /// them from its first frame; gone again, and reset, when it stops.
+  /// Whether a play-test is running, as last heard: what a start that had
+  /// to wait for files checks before it shows anything.
+  bool _playing = false;
+
+  /// An install under way, shared by every start that asks meanwhile.
+  Future<UiScreensPlugin?>? _installing;
+
+  /// The game's screens while a play-test runs, read from the files as
+  /// they are now — the game's first frame — and gone again, and reset,
+  /// when it stops.
   Future<void> _follow(bool playing) async {
     final engine = _scope?.engine;
     if (engine == null) return;
     var installed = JustGameUi.of(engine);
-    if (playing && installed == null) {
-      try {
-        installed = await JustGameUi.install(engine, read: project.read);
-      } on Object {
-        // No screen list yet: a play-test with no screens.
-        return;
-      }
+    if (!playing) {
+      installed?.screens.reset();
+      engine.layers.setEnabled(UiScreensLayer.layerId, false);
+      return;
     }
-    installed?.screens.reset();
-    engine.layers.setEnabled(UiScreensLayer.layerId, playing);
+    try {
+      if (installed == null) {
+        installed = await (_installing ??= _install(engine));
+      } else {
+        // Whatever was saved, moved or listed since the last play-test.
+        await installed.screens.reloadFrom(
+          project.readManifest(),
+          read: project.read,
+        );
+      }
+    } on Object {
+      installed = JustGameUi.of(engine);
+    }
+    // Stopped while the files were read: nothing shows over the editor.
+    if (!_playing || _scope == null) {
+      installed?.screens.reset();
+      engine.layers.setEnabled(UiScreensLayer.layerId, false);
+      return;
+    }
+    engine.layers.setEnabled(UiScreensLayer.layerId, installed != null);
+  }
+
+  Future<UiScreensPlugin?> _install(Engine engine) async {
+    try {
+      // The editor reads the project's fonts itself (see onRegister).
+      return await JustGameUi.install(engine, read: project.read, fonts: null);
+    } on Object {
+      // No screen list yet: a play-test with no screens.
+      return null;
+    } finally {
+      _installing = null;
+    }
   }
 }

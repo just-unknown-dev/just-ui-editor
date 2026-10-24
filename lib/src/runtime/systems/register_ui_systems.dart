@@ -8,18 +8,26 @@ import 'ui_system.dart';
 
 /// Adds what keeps the interface alive: bindings re-read, text typed out,
 /// world buttons pressed. A game that shows any UI calls this once at boot.
-/// Systems already in [world] are left alone.
+///
+/// Systems already in [world] are kept, and given [localise] and [onSound]
+/// when those are passed — so calling it again (installing the interface
+/// again) takes the new ones rather than leaving the first.
 void registerUiSystems(
   World world, {
   String Function(String key)? localise,
   void Function(String path)? onSound,
 }) {
-  bool has<T extends System>() => world.systems.any((s) => s is T);
   UiBindings.registerBuiltIns();
-  if (!has<UiSystem>()) {
+  final text = world.getSystem<UiSystem>();
+  if (text == null) {
     world.addSystem(UiSystem(localise: localise));
+  } else if (localise != null) {
+    text.localise = localise;
   }
-  if (!has<UiPointerSystem>()) {
+  final pointer = world.getSystem<UiPointerSystem>();
+  if (pointer == null) {
     world.addSystem(UiPointerSystem(onSound: onSound));
+  } else if (onSound != null) {
+    pointer.onSound = onSound;
   }
 }

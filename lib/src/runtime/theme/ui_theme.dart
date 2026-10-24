@@ -220,7 +220,14 @@ class UiTheme {
 
   /// What the Flutter layer themes its widgets with, so stock widgets and
   /// a game's own both follow the theme.
-  ThemeData toThemeData() {
+  ///
+  /// Made once per theme: a `ThemeData` is costly to build, and a canvas
+  /// asks for one every time it is built.
+  ThemeData toThemeData() => _themeData[this] ??= _makeThemeData();
+
+  static final Expando<ThemeData> _themeData = Expando('uiThemeData');
+
+  ThemeData _makeThemeData() {
     final scheme = ColorScheme.dark(
       primary: palette.primary,
       onPrimary: palette.onPrimary,
@@ -335,6 +342,13 @@ abstract final class UiThemes {
 
   static final Map<String, UiTheme> _loaded = {};
 
+  /// Paths that would not load, so they are not asked for again every
+  /// frame. Cleared by [evict], [put] and [reset].
+  static final Set<String> _failed = {};
+
+  /// Loads in flight, so asking twice does not read the file twice.
+  static final Map<String, Future<UiTheme>> _loading = {};
+
   /// The theme a canvas that names none is drawn with.
   static UiTheme fallback = UiTheme.fallback;
 
@@ -358,17 +372,35 @@ abstract final class UiThemes {
 
   /// What [path] holds, once it has been read. Null before then — a painter
   /// cannot wait for a file, so it draws with [fallback] until the load
-  /// lands and the next frame picks it up.
-  static UiTheme? cached(String path) => _loaded[path];
+  /// lands and the next frame picks it up. A path that would not load is
+  /// [fallback] until it is [evict]ed.
+  static UiTheme? cached(String path) =>
+      _loaded[path] ?? (_failed.contains(path) ? fallback : null);
+
+  /// Whether [path] was asked for and would not load.
+  static bool failed(String path) => _failed.contains(path);
 
   /// Reads [path], keeping it for [cached]. A theme that will not load is
-  /// the fallback rather than an exception mid-frame.
-  static Future<UiTheme> load(String path) async {
-    if (path.isEmpty) return fallback;
+  /// the fallback rather than an exception mid-frame, and is not read again
+  /// until it is [evict]ed.
+  static Future<UiTheme> load(String path) {
+    if (path.isEmpty || _failed.contains(path)) return Future.value(fallback);
     final known = _loaded[path];
-    if (known != null) return known;
+    if (known != null) return Future.value(known);
+    return _loading[path] ??= _read(path);
+  }
+
+  static Future<UiTheme> _read(String path) async {
+    // A read that a [reset] or an [evict] overtook answers whoever waited
+    // for it, and changes nothing: what it read, or that it failed, is of
+    // a time since forgotten.
+    final era = _era;
+    final evictions = _evictions[path] ?? 0;
+    bool current() => era == _era && (_evictions[path] ?? 0) == evictions;
     try {
-      final theme = _loaded[path] = await loader(path);
+      final theme = await loader(path);
+      if (!current()) return theme;
+      _loaded[path] = theme;
       // The first theme a project loads is the one a tool shows roles
       // from, until something says otherwise.
       if (identical(preview, UiTheme.fallback)) {
@@ -377,14 +409,25 @@ abstract final class UiThemes {
       }
       return theme;
     } catch (_) {
+      if (current()) _failed.add(path);
       return fallback;
+    } finally {
+      if (current()) _loading.remove(path);
     }
   }
+
+  /// Raised by [reset], and by an [evict] of every theme, so a read begun
+  /// before either is not kept after it.
+  static int _era = 0;
+
+  /// How often each path was [evict]ed on its own, for the same reason.
+  static final Map<String, int> _evictions = {};
 
   /// Uses [theme] for [path] from now on, as though read from it — how a
   /// theme editor shows an edit on every canvas before it is saved.
   static void put(String path, UiTheme theme) {
     _loaded[path] = theme;
+    _failed.remove(path);
     if (previewPath == path) preview = theme;
   }
 
@@ -408,7 +451,10 @@ abstract final class UiThemes {
   /// Back to nothing read: no themes, the built-in fallback and preview,
   /// the bundle loader. For tests, and for a tool opening another project.
   static void reset() {
+    _era++;
     _loaded.clear();
+    _failed.clear();
+    _loading.clear();
     fallback = UiTheme.fallback;
     preview = UiTheme.fallback;
     previewPath = null;
@@ -422,9 +468,15 @@ abstract final class UiThemes {
   /// was when the tool opened.
   static void evict([String? path]) {
     if (path == null) {
+      _era++;
       _loaded.clear();
+      _failed.clear();
+      _loading.clear();
     } else {
+      _evictions[path] = (_evictions[path] ?? 0) + 1;
       _loaded.remove(path);
+      _failed.remove(path);
+      _loading.remove(path);
     }
     final shown = previewPath;
     if (shown != null && (path == null || path == shown)) {

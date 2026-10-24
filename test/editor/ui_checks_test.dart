@@ -4,7 +4,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/widgets.dart' show IconData;
 import 'package:flutter_test/flutter_test.dart';
+
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/just_editor_core.dart';
 import 'package:just_ui_editor/editor.dart';
@@ -187,6 +189,103 @@ void main() {
       final said = messages();
       expect(said, contains(contains('broken.ui.json does not read')));
       expect(said, contains(contains('nothing happens when it is')));
+    });
+
+    test('a layer pushed as though it were a screen', () {
+      screen('Hud', const []);
+      screen('Pause', [
+        ('Go', [button('ui.push', 'Hud')]),
+      ], isScreen: true);
+
+      expect(messages(), contains(contains('pushes "Hud", which is a layer')));
+    });
+
+    test('a theme that is not there, or does not read', () {
+      screen('Hud', const []);
+      project.writeJsonSync(UiScreenManifest.defaultPath, {
+        'theme': 'assets/ui/gone.uitheme.json',
+        'screens': listed,
+      });
+      expect(messages(), contains(contains('gone.uitheme.json is not there')));
+
+      File('${dir.path}/assets/ui/gone.uitheme.json').writeAsStringSync('{');
+      expect(messages(), contains(contains('gone.uitheme.json does not read')));
+    });
+
+    test('a list that does not read says so', () {
+      screen('Hud', const []);
+      File(
+        '${dir.path}/${UiScreenManifest.defaultPath}',
+      ).writeAsStringSync('{"screens": [,]}');
+
+      final problems = UiChecks.screens(project);
+      expect(problems.single.message, contains('screens.json does not read'));
+      expect(problems.single.severity, ProblemSeverity.error);
+    });
+  });
+
+  group('controls and tags', () {
+    test('an icon the game does not register', () {
+      UiIcons.register('coin', const IconData(0xe000));
+      addTearDown(UiIcons.clear);
+      screen('Hud', [
+        ('Coins', [TextComponent(text: '[icon=coin] [icon=gem] 12')]),
+      ]);
+
+      final said = messages();
+      expect(said, contains(contains('[icon=gem]')));
+      expect(said, isNot(contains(contains('[icon=coin]'))));
+    });
+
+    test('with no icons registered, none is complained of', () {
+      screen('Hud', [
+        ('Coins', [TextComponent(text: '[icon=gem] 12')]),
+      ]);
+      expect(messages(), isNot(contains(contains('[icon='))));
+    });
+
+    test('a link that cannot be clicked', () {
+      screen('Hud', [
+        ('Shop', [TextComponent(text: '[wave][link=shop]Shop[/link][/wave]')]),
+        ('Plain', [TextComponent(text: '[link=shop]Shop[/link]')]),
+      ]);
+      final said = messages();
+      expect(said, contains(contains('Hud › Shop has a [link]')));
+      expect(said, isNot(contains(contains('Hud › Plain has a [link]'))));
+
+      final level = _uiWorld()..initialize();
+      level.createEntityWithComponents([
+        TextComponent(text: 'Visit the [link=shop]shop[/link]'),
+      ], name: 'Sign');
+      expect(
+        UiChecks.level(level).map((p) => p.message),
+        contains(contains('Sign has a [link]')),
+      );
+    });
+
+    test('a slider from more to less, and a choice offered twice', () {
+      screen('Options', [
+        ('Volume', [UiSliderComponent(min: 1, max: 0)]),
+        (
+          'Size',
+          [
+            UiDropdownComponent(options: ['Small', 'Big', 'Small']),
+          ],
+        ),
+      ]);
+      final said = messages();
+      expect(said, contains(contains('its least is more than its most')));
+      expect(said, contains(contains('offers "Small" more than once')));
+    });
+
+    test('a flex or a spacer outside a row or a column', () {
+      screen('Hud', [
+        ('Wide', [UiSlotComponent(flex: 1)]),
+        ('Gap', [UiSpacerComponent(expand: true), UiSlotComponent()]),
+      ]);
+      final said = messages();
+      expect(said, contains(contains('Hud › Wide has a flex')));
+      expect(said, contains(contains('Hud › Gap is a spacer')));
     });
   });
 

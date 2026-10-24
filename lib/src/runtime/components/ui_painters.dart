@@ -7,7 +7,7 @@ import '../logic/ui_bindings.dart';
 import '../text/ui_rich_text.dart';
 import '../text/ui_text_painter.dart';
 import '../text/ui_text_style.dart';
-import '../theme/ui_theme.dart';
+import '../theme/ui_world_style.dart';
 import 'button_component.dart';
 import 'text_component.dart';
 import 'ui_component.dart';
@@ -31,16 +31,12 @@ class TextComponentPainter extends ComponentPainter<TextComponent>
   /// component's text rarely changes between frames.
   static final Expando<UiTextPainter> _painters = Expando('uiTextPainter');
 
-  /// How a key becomes words. The game sets this once; without it a key
-  /// shows as written, which is what an editor wants.
-  static String Function(String key)? localise;
-
-  /// The theme world text is drawn with.
-  static UiTheme theme = UiTheme.fallback;
-
   @override
   void paint(Canvas canvas, Entity e, TextComponent text, RenderContext ctx) {
-    final resolved = text.resolve(self: e, localise: localise);
+    // The theme and the language are the engine's (see [UiWorldStyle]),
+    // which `JustGameUi.install` fills in.
+    final look = UiWorldStyle.of(ctx.world.context);
+    final resolved = text.resolve(self: e, localise: look.localise);
     if (resolved.isEmpty) return;
     final shown = text.revealSpeed > 0
         ? resolved.take(text.revealed.floor())
@@ -51,7 +47,7 @@ class TextComponentPainter extends ComponentPainter<TextComponent>
     painter
       ..set(
         text: shown,
-        style: text.styleUnder(theme),
+        style: text.styleUnder(look.resolvedTheme),
         layout: text.layoutFor(),
       )
       ..paint(
@@ -72,9 +68,14 @@ class ButtonComponentPainter extends ComponentPainter<ButtonComponent>
   static final _border = Paint()..style = PaintingStyle.stroke;
   static final Expando<UiTextPainter> _labels = Expando('uiButtonLabel');
 
+  /// Each button's label as last read, so it is parsed again only when the
+  /// words change.
+  static final Expando<_Label> _read = Expando('uiButtonRead');
+
   @override
   void paint(Canvas canvas, Entity e, ButtonComponent b, RenderContext ctx) {
-    final theme = TextComponentPainter.theme;
+    final look = UiWorldStyle.of(ctx.world.context);
+    final theme = look.resolvedTheme;
     final rect = RRect.fromRectAndRadius(
       Rect.fromCenter(
         center: Offset.zero,
@@ -91,7 +92,15 @@ class ButtonComponentPainter extends ComponentPainter<ButtonComponent>
       canvas.drawRRect(rect, _border);
     }
 
-    final label = UiRichText.parse(UiBindings.interpolate(b.label, self: e));
+    final source = UiBindings.resolveText(
+      b.label,
+      self: e,
+      localise: look.localise,
+    );
+    final read = _read[b];
+    final label = read != null && read.source == source
+        ? read.parsed
+        : (_read[b] = _Label(source, UiRichText.parse(source))).parsed;
     if (label.isEmpty) return;
     final style = b.labelStyleUnder(theme);
     (_labels[b] ??= UiTextPainter())
@@ -113,4 +122,12 @@ class ButtonComponentPainter extends ComponentPainter<ButtonComponent>
       )
       ..paint(canvas, Offset.zero);
   }
+}
+
+/// A button's label: what it said, and that parsed.
+class _Label {
+  _Label(this.source, this.parsed);
+
+  final String source;
+  final UiRichText parsed;
 }

@@ -5,7 +5,8 @@
 /// text always say the same thing.
 library;
 
-import 'package:flutter/painting.dart';
+import 'package:flutter/gestures.dart' show GestureRecognizer;
+import 'package:flutter/widgets.dart';
 
 import 'ui_text_style.dart';
 
@@ -69,6 +70,18 @@ class UiTextSpan {
   );
 
   @override
+  bool operator ==(Object other) =>
+      other is UiTextSpan &&
+      other.text == text &&
+      other.style == style &&
+      other.effect == effect &&
+      other.icon == icon &&
+      other.link == link;
+
+  @override
+  int get hashCode => Object.hash(text, style, effect, icon, link);
+
+  @override
   String toString() =>
       isIcon ? 'UiTextSpan(icon: $icon)' : 'UiTextSpan("$text")';
 }
@@ -95,6 +108,23 @@ class UiRichText {
         s.style.gradient != null ||
         (s.style.outline?.isVisible ?? false),
   );
+
+  /// Whether anything here changes from frame to frame: a wave, a shake, a
+  /// rainbow or a pulse.
+  bool get animates => spans.any((s) => s.effect != UiTextEffect.none);
+
+  /// Whether [other] says the same thing in the same way, span for span —
+  /// not just the same words.
+  bool sameAs(UiRichText other) {
+    if (identical(this, other)) return true;
+    if (plain != other.plain || spans.length != other.spans.length) {
+      return false;
+    }
+    for (var i = 0; i < spans.length; i++) {
+      if (spans[i] != other.spans[i]) return false;
+    }
+    return true;
+  }
 
   /// How many characters there are in all, icons counting as one.
   int get length {
@@ -128,21 +158,58 @@ class UiRichText {
     );
   }
 
-  /// A `TextSpan` for the Flutter layer. [base] is the style underneath,
-  /// and [iconBuilder] turns an `[icon=…]` into something in the line.
+  /// A `TextSpan` for Flutter to lay out. [base] is the style underneath.
+  ///
+  /// An `[icon=…]` becomes what [iconBuilder] makes of it, or else what
+  /// [UiIcons] has under that name — a glyph anywhere, a widget only where
+  /// [widgets] is true (a `Text`; never a canvas painter, which cannot draw
+  /// one). [foreground] paints every run with one paint — an outline's
+  /// stroke. [recognizerFor] gives a `[link=…]` run something to tap.
   InlineSpan toTextSpan(
     UiTextStyle base, {
     InlineSpan Function(String name, UiTextStyle style)? iconBuilder,
-  }) => TextSpan(
-    children: [
-      for (final span in spans)
-        if (span.isIcon)
-          iconBuilder?.call(span.icon!, span.style.over(base)) ??
-              const TextSpan(text: '')
-        else
-          TextSpan(text: span.text, style: span.style.over(base).toTextStyle()),
-    ],
-  );
+    bool widgets = false,
+    Paint? foreground,
+    GestureRecognizer? Function(UiTextSpan span)? recognizerFor,
+  }) {
+    TextStyle look(UiTextStyle style) {
+      final flutter = style.toTextStyle();
+      return foreground == null
+          ? flutter
+          : flutter.copyWith(foreground: foreground, shadows: const []);
+    }
+
+    return TextSpan(
+      children: [
+        for (final span in spans)
+          if (span.isIcon)
+            iconBuilder?.call(span.icon!, span.style.over(base)) ??
+                UiIcons.spanFor(
+                  span.icon!,
+                  span.style.over(base),
+                  widgets: widgets && foreground == null,
+                  foreground: foreground,
+                ) ??
+                const TextSpan(text: '')
+          else
+            _run(span, look(span.style.over(base)), recognizerFor),
+      ],
+    );
+  }
+
+  static TextSpan _run(
+    UiTextSpan span,
+    TextStyle style,
+    GestureRecognizer? Function(UiTextSpan span)? recognizerFor,
+  ) {
+    final recognizer = span.link == null ? null : recognizerFor?.call(span);
+    return TextSpan(
+      text: span.text,
+      style: style,
+      recognizer: recognizer,
+      mouseCursor: recognizer == null ? null : SystemMouseCursors.click,
+    );
+  }
 
   /// Reads [source] and its tags.
   ///
@@ -265,6 +332,15 @@ class UiRichText {
     return null;
   }
 
+  /// A colour as a tag or a field writes it: `#rgb`, `#rrggbb`,
+  /// `#aarrggbb`, or one of a few names (`red`, `white`…). Null when it
+  /// makes no sense.
+  static Color? parseColor(String? raw) => _Tag.parseColor(raw);
+
+  /// [color] as [parseColor] reads it back: `#aarrggbb`.
+  static String writeColor(Color color) =>
+      '#${color.toARGB32().toRadixString(16).padLeft(8, '0')}';
+
   /// The tags that may be written, for an editor to offer.
   static const List<String> tagNames = [
     'b',
@@ -375,4 +451,88 @@ class _Tag {
     'grey': Color(0xFF9E9E9E),
     'gray': Color(0xFF9E9E9E),
   };
+}
+
+/// Draws one icon in a line of text, for a screen: an image, a widget of
+/// the game's own. [size] is the font size of the text around it.
+typedef UiIconWidgetBuilder = Widget Function(double size);
+
+/// What `[icon=name]` draws.
+///
+/// A glyph from an icon font ([register]) works everywhere text does — in
+/// a screen and on the game's canvas — since it is just another letter. A
+/// widget ([registerWidget]) can be anything, a coin's sprite included,
+/// but only a screen can show one: in world text it draws nothing.
+///
+/// ```dart
+/// UiIcons.register('heart', Icons.favorite);
+/// UiIcons.registerWidget('coin', (size) => Image.asset('assets/coin.png',
+///     width: size, height: size));
+/// ```
+///
+/// A name nobody registered draws nothing, and the editor's Problems dock
+/// is where that shows.
+abstract final class UiIcons {
+  static final Map<String, IconData> _glyphs = {};
+  static final Map<String, UiIconWidgetBuilder> _widgets = {};
+
+  /// Makes `[icon=name]` draw [icon], in the colour and size of the text
+  /// around it.
+  static void register(String name, IconData icon) {
+    _widgets.remove(name);
+    _glyphs[name] = icon;
+  }
+
+  /// Makes `[icon=name]` draw what [build] makes, in a screen.
+  static void registerWidget(String name, UiIconWidgetBuilder build) {
+    _glyphs.remove(name);
+    _widgets[name] = build;
+  }
+
+  static void unregister(String name) {
+    _glyphs.remove(name);
+    _widgets.remove(name);
+  }
+
+  static bool has(String name) =>
+      _glyphs.containsKey(name) || _widgets.containsKey(name);
+
+  /// Every name registered, for an editor to offer.
+  static List<String> get names => [..._glyphs.keys, ..._widgets.keys]..sort();
+
+  static void clear() {
+    _glyphs.clear();
+    _widgets.clear();
+  }
+
+  /// The run [name] draws as, in [style]; null when nothing can be drawn
+  /// here — no such icon, or a widget where [widgets] is false.
+  static InlineSpan? spanFor(
+    String name,
+    UiTextStyle style, {
+    bool widgets = true,
+    Paint? foreground,
+  }) {
+    final glyph = _glyphs[name];
+    if (glyph != null) {
+      final look = style.toTextStyle().copyWith(
+        fontFamily: glyph.fontFamily,
+        package: glyph.fontPackage,
+        fontFamilyFallback: glyph.fontFamilyFallback,
+      );
+      return TextSpan(
+        text: String.fromCharCode(glyph.codePoint),
+        style: foreground == null
+            ? look
+            : look.copyWith(foreground: foreground, shadows: const []),
+      );
+    }
+    final build = _widgets[name];
+    if (build == null || !widgets) return null;
+    final size = style.over(UiTextStyle.fallback).effectiveSize;
+    return WidgetSpan(
+      alignment: PlaceholderAlignment.middle,
+      child: SizedBox.square(dimension: size, child: build(size)),
+    );
+  }
 }

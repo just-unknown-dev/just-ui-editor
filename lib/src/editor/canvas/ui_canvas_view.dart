@@ -20,6 +20,7 @@ import '../../runtime/components/screen/ui_slot_component.dart';
 import '../../runtime/layer/ui_layer.dart';
 import '../../runtime/logic/ui_actions.dart';
 import '../../runtime/logic/ui_bindings.dart';
+import '../../runtime/systems/ui_system.dart';
 import '../create/ui_create.dart';
 import '../document/ui_screen_document.dart';
 import '../session/ui_edit_ops.dart';
@@ -50,9 +51,16 @@ class _Drag {
   // move / resize / reorder
   List<Entity> entities = const [];
   Map<Entity, Rect> rects = const {};
-  Map<UiSlotComponent, UiSlotState> slots = const {};
+  Map<Entity, UiSlotState> slots = const {};
   UiHandle handle = UiHandle.move;
   int insertAt = -1;
+
+  /// What the step is called in the history: "Move Resume".
+  String label = '';
+
+  // marquee: whether the press was on the canvas itself, which a click —
+  // a press that never became a marquee — selects.
+  bool onCanvas = false;
 
   // pan
   Offset panAtStart = Offset.zero;
@@ -76,7 +84,20 @@ class UiCanvasView extends StatefulWidget {
 class UiCanvasViewState extends State<UiCanvasView>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
+
+  /// Repaints the overlay and the rulers: when what they show has moved,
+  /// not every frame.
   final _repaint = _Tick();
+
+  /// What follows the pointer. Changing it repaints; it never rebuilds.
+  final UiCanvasOverlay _overlay = UiCanvasOverlay();
+
+  /// The pointer's shape over the canvas, the one thing a hover changes
+  /// that a painter cannot draw.
+  final ValueNotifier<MouseCursor> _cursor = ValueNotifier(
+    SystemMouseCursors.basic,
+  );
+
   final GlobalKey _viewKey = GlobalKey(debugLabel: 'uiCanvasView');
 
   /// A fresh key for every screen opened: a layer keeps the navigator of the
@@ -85,18 +106,39 @@ class UiCanvasViewState extends State<UiCanvasView>
   UiScreenDocument? _layerFor;
 
   /// The other screens drawn underneath, in a world of their own so their
-  /// names and ids never mix with the one being edited.
+  /// names and ids never mix with the one being edited — and a key of its
+  /// own for each such world, for the reason above.
   World? _behind;
   List<String> _behindNames = const [];
-  final GlobalKey<UiLayerState> _behindKey = GlobalKey<UiLayerState>();
+  GlobalKey<UiLayerState> _behindKey = GlobalKey<UiLayerState>();
+
+  /// What Preview shows: a copy of the open screen, built when Preview
+  /// begins and thrown away when it ends. A player's toggles, sliders and
+  /// typing change the copy's components, and a Back closes the copy's
+  /// canvas; the document's — what Save writes — is never touched. Made
+  /// again when the document is edited while Preview is on.
+  World? _preview;
+  UiScreenDocument? _previewFor;
+  int _previewRevision = -1;
+  GlobalKey<UiLayerState> _previewKey = GlobalKey<UiLayerState>();
+  UiNodeBoxes _previewNodes = UiNodeBoxes();
+
+  /// The copy's id for each of the document's entities.
+  Map<EntityId, EntityId> _previewIds = const {};
+
+  /// The device frame as last built, and what it was built from: reused
+  /// while those stay the same, so a pan or a zoom moves it rather than
+  /// building the whole screen again.
+  Object? _frameKey;
+  Widget? _frame;
 
   Duration? _lastTick;
+  Duration _lastPainted = Duration.zero;
+
+  /// The open screen's revision the layer was last built for.
+  int? _shownRevision;
+  int? _lastSignature;
   _Drag? _drag;
-  Offset? _pointer;
-  Entity? _hover;
-  Rect? _marquee;
-  UiInsertMark? _insert;
-  String? _dragLabel;
   bool _spaceHeld = false;
 
   UiEditorSession get session => widget.session;
@@ -114,16 +156,34 @@ class UiCanvasViewState extends State<UiCanvasView>
     HardwareKeyboard.instance.removeHandler(_onKey);
     _ticker.dispose();
     _repaint.dispose();
+    _overlay.dispose();
+    _cursor.dispose();
     _behind?.dispose();
-    session.metrics = null;
+    _preview?.dispose();
+    session
+      ..metrics = null
+      ..previewCanvas = null;
     super.dispose();
+  }
+
+  /// Lets [world] go once the frame that stopped showing it is done: the
+  /// layer that drew it is taken down in that frame, after this.
+  static void _disposeLater(World? world) {
+    if (world == null) return;
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) => world.dispose())
+      ..ensureVisualUpdate();
   }
 
   // Space held down turns a drag into a pan, as in any drawing program.
   bool _onKey(KeyEvent event) {
     if (event.logicalKey == LogicalKeyboardKey.space &&
         !WorkspaceKeyScope.isTyping) {
-      _spaceHeld = event is! KeyUpEvent;
+      final held = event is! KeyUpEvent;
+      if (held != _spaceHeld) {
+        _spaceHeld = held;
+        _updateCursor();
+      }
     }
     return false;
   }
@@ -135,31 +195,85 @@ class UiCanvasViewState extends State<UiCanvasView>
         : (elapsed - _lastTick!).inMicroseconds / 1e6;
     _lastTick = elapsed;
     final doc = _doc;
+    final previewing = session.previewing;
     if (doc != null) {
-      if (session.previewing) doc.world.update(dt);
-      _applyForcedState(doc);
-      _layerKey.currentState?.sync();
+      if (previewing) {
+        // Edited while Preview is on: show the edit, from a fresh copy.
+        if (!identical(_previewFor, doc) ||
+            _previewRevision != doc.history.revision.value) {
+          setState(() {});
+        }
+        _preview?.update(dt);
+      }
+      final shown = previewing ? _preview : doc.world;
+      if (shown != null) _applyForcedState(shown, previewing: previewing);
+      // An edit can move an element, which its parent places: the layer
+      // sees a node change, not where its parent puts it, so it is told to
+      // build the screen again — once per edit, not once per frame.
+      final revision = doc.sceneState.revision.value;
+      if (revision != _shownRevision) {
+        _shownRevision = revision;
+        _layerKey.currentState?.markDirty();
+      }
+      (previewing ? _previewKey : _layerKey).currentState?.sync();
     }
     _behindKey.currentState?.sync();
     final view = _viewKey.currentContext?.findRenderObject();
     session.metrics = doc != null && view is RenderBox && view.hasSize
-        ? UiCanvasMetrics(view: view, document: doc, nodes: session.nodes)
+        ? UiCanvasMetrics(
+            view: view,
+            document: doc,
+            nodes: previewing ? _previewNodes : session.nodes,
+            ids: previewing ? _previewIds : null,
+          )
         : null;
     session.syncShownZoom();
+    _repaintIfMoved(elapsed, doc);
+  }
+
+  /// Repaints the overlay and the rulers when anything they draw from has
+  /// changed — and at least four times a second, for what changes nothing
+  /// they can see (a theme or a font arriving reflows the screen); every
+  /// frame in Preview, where the screen moves by itself.
+  void _repaintIfMoved(Duration now, UiScreenDocument? doc) {
+    final m = session.metrics;
+    final state = doc?.sceneState;
+    final signature = Object.hashAll([
+      m?.canvasView,
+      m?.view.size,
+      state?.revision.value,
+      doc?.history.revision.value,
+      state?.selectedEntity.value?.id,
+      Object.hashAll(state?.multiSelectedIds.value ?? const <EntityId>[]),
+      doc?.editorData.value,
+      session.snapGuides.value,
+      session.grid.value,
+      session.gridStep.value,
+      session.showGuides.value,
+      session.boxes.value,
+      session.rulers.value,
+    ]);
+    final due = now - _lastPainted >= const Duration(milliseconds: 250);
+    if (signature == _lastSignature && !session.previewing && !due) return;
+    _lastSignature = signature;
+    _lastPainted = now;
     _repaint.notify();
   }
 
   /// Buttons shown in the state the preview strip asks for — every button,
-  /// or the selected ones when there are any.
-  void _applyForcedState(UiScreenDocument doc) {
+  /// or the selected ones when there are any — in [world], the one shown.
+  void _applyForcedState(World world, {required bool previewing}) {
     final forced = session.forcedState.value;
-    final selected = {for (final e in session.selection) e.id};
-    for (final e in doc.world.query([ButtonComponent])) {
+    final selected = {
+      for (final e in session.selection)
+        ?(previewing ? _previewIds[e.id] : e.id),
+    };
+    for (final e in world.query([ButtonComponent])) {
       final button = e.getComponent<ButtonComponent>()!;
       final applies =
           forced != null && (selected.isEmpty || selected.contains(e.id));
       final want = applies ? forced : UiInteractionState.normal;
-      if (!session.previewing || applies) {
+      if (!previewing || applies) {
         if (button.state != want) button.state = want;
       }
     }
@@ -183,6 +297,7 @@ class UiCanvasViewState extends State<UiCanvasView>
       ],
       builder: (context, _) {
         final doc = _doc;
+        _syncPreview(doc);
         if (doc == null) return const _NothingOpen();
         if (!identical(_layerFor, doc)) {
           _layerFor = doc;
@@ -203,8 +318,11 @@ class UiCanvasViewState extends State<UiCanvasView>
     ];
     if (listEquals(names, _behindNames)) return;
     _behindNames = names;
-    _behind?.dispose();
+    _disposeLater(_behind);
     _behind = null;
+    // A new world needs a new layer: the old one's navigator would go on
+    // reading the world it was first built on.
+    _behindKey = GlobalKey<UiLayerState>();
     if (names.isEmpty) return;
     final world = World(context: doc.world.context)..initialize();
     for (final name in names) {
@@ -220,6 +338,60 @@ class UiCanvasViewState extends State<UiCanvasView>
       }
     }
     _behind = world;
+  }
+
+  /// Builds the copy Preview shows, or lets it go outside Preview.
+  void _syncPreview(UiScreenDocument? doc) {
+    if (doc == null || !session.previewing) {
+      if (_preview == null) return;
+      _disposeLater(_preview);
+      _preview = null;
+      _previewFor = null;
+      _previewIds = const {};
+      session.previewCanvas = null;
+      return;
+    }
+    final revision = doc.history.revision.value;
+    if (_preview != null &&
+        identical(_previewFor, doc) &&
+        _previewRevision == revision) {
+      return;
+    }
+    _disposeLater(_preview);
+    final world = World(context: doc.world.context)
+      ..initialize()
+      // Text that types itself out, bindings re-read — as in the document.
+      ..addSystem(UiSystem());
+    final canvas = doc.capture().instantiate(
+      world,
+      decode: doc.codec.decodeAll,
+    );
+    canvas.getComponent<UiCanvasComponent>()?.visible = true;
+    // A file lists parents first and siblings in order, and is built in
+    // that order: walked the same way, the copy's entities line up with the
+    // document's one for one.
+    final copies = <Entity>[];
+    void walk(Entity e) {
+      copies.add(e);
+      for (final id
+          in e.getComponent<ChildrenComponent>()?.childIds ??
+              const <EntityId>[]) {
+        if (world.getEntity(id) case final child?) walk(child);
+      }
+    }
+
+    walk(canvas);
+    final originals = doc.entities;
+    _previewIds = {
+      for (var i = 0; i < originals.length && i < copies.length; i++)
+        originals[i].id: copies[i].id,
+    };
+    _preview = world;
+    _previewFor = doc;
+    _previewRevision = revision;
+    _previewKey = GlobalKey<UiLayerState>();
+    _previewNodes = UiNodeBoxes();
+    session.previewCanvas = canvas;
   }
 
   Widget _canvas(UiScreenDocument doc, Size space) {
@@ -244,6 +416,7 @@ class UiCanvasViewState extends State<UiCanvasView>
         session.pan.value;
     final shown = Size(frame.width * zoom, frame.height * zoom);
     final previewing = session.previewing;
+    final repaint = Listenable.merge([_repaint, _overlay]);
 
     return ClipRect(
       child: Stack(
@@ -254,7 +427,7 @@ class UiCanvasViewState extends State<UiCanvasView>
             top: centre.dy - shown.height / 2,
             width: shown.width,
             height: shown.height,
-            child: _deviceFrame(
+            child: _frameFor(
               doc,
               frame,
               device.insetsFor(landscape: landscape),
@@ -265,7 +438,7 @@ class UiCanvasViewState extends State<UiCanvasView>
           Positioned.fill(
             child: IgnorePointer(
               ignoring: previewing,
-              child: _interaction(doc),
+              child: _interaction(doc, repaint),
             ),
           ),
           if (rulers > 0)
@@ -274,9 +447,9 @@ class UiCanvasViewState extends State<UiCanvasView>
                 child: CustomPaint(
                   painter: UiRulersPainter(
                     metrics: () => session.metrics,
-                    pointer: _pointer,
+                    pointer: () => _overlay.pointer,
                     selection: _selectionBox,
-                    repaint: _repaint,
+                    repaint: repaint,
                   ),
                 ),
               ),
@@ -297,27 +470,62 @@ class UiCanvasViewState extends State<UiCanvasView>
     return box;
   }
 
+  /// [_deviceFrame], built again only when what it shows changed.
+  Widget _frameFor(UiScreenDocument doc, Size frame, EdgeInsets insets) {
+    final media = MediaQuery.of(context);
+    final key = (
+      doc,
+      frame,
+      insets,
+      session.previewing,
+      session.textScale.value,
+      _behind,
+      _behindKey,
+      _preview,
+      _previewKey,
+      _layerKey,
+      media,
+    );
+    final built = _frame;
+    if (built != null && key == _frameKey) return built;
+    _frameKey = key;
+    return _frame = _deviceFrame(doc, frame, insets, media);
+  }
+
   /// The screen at its device's size, scaled into the space by the zoom.
-  Widget _deviceFrame(UiScreenDocument doc, Size frame, EdgeInsets insets) {
-    final previewing = session.previewing;
-    final media = MediaQuery.of(context).copyWith(
+  Widget _deviceFrame(
+    UiScreenDocument doc,
+    Size frame,
+    EdgeInsets insets,
+    MediaQueryData outer,
+  ) {
+    final media = outer.copyWith(
       size: frame,
       padding: insets,
       viewPadding: insets,
       textScaler: TextScaler.linear(session.textScale.value),
     );
-    Widget layer = UiLayer(
-      key: _layerKey,
-      world: doc.world,
-      nodes: session.nodes,
-      actionHost: _previewHost(),
-    );
-    if (!previewing) {
-      // Editing: the screen is a picture of itself. Its buttons are not
-      // pressed and its fields take no keys — a click selects, and Enter
-      // runs nothing.
-      layer = IgnorePointer(child: ExcludeFocus(child: layer));
-    }
+    final preview = session.previewing ? _preview : null;
+    // Editing: the screen is a picture of itself. Its buttons are not
+    // pressed and its fields take no keys — a click selects, and Enter
+    // runs nothing. Previewing: the copy, to be played with.
+    final Widget layer = preview != null
+        ? UiLayer(
+            key: _previewKey,
+            world: preview,
+            nodes: _previewNodes,
+            actionHost: _previewHost(),
+          )
+        : IgnorePointer(
+            child: ExcludeFocus(
+              child: UiLayer(
+                key: _layerKey,
+                world: doc.world,
+                nodes: session.nodes,
+                actionHost: _previewHost(),
+              ),
+            ),
+          );
     return DecoratedBox(
       decoration: BoxDecoration(
         boxShadow: const [BoxShadow(color: Color(0x88000000), blurRadius: 24)],
@@ -384,57 +592,71 @@ class UiCanvasViewState extends State<UiCanvasView>
     );
   }
 
-  Widget _interaction(UiScreenDocument doc) {
-    return DragTarget<UiPaletteDrag>(
-      onWillAcceptWithDetails: (_) => !session.previewing,
-      onMove: (details) => _paletteHover(details.offset),
-      onLeave: (_) => setState(() => _insert = null),
-      onAcceptWithDetails: (details) =>
-          _paletteDrop(details.data, details.offset),
-      builder: (context, _, _) => MouseRegion(
-        cursor: _cursor(),
-        onHover: (e) => _hovering(e.localPosition),
-        onExit: (_) => setState(() {
-          _pointer = null;
-          _hover = null;
-        }),
-        child: Listener(
-          behavior: HitTestBehavior.opaque,
-          onPointerDown: _down,
-          onPointerMove: _move,
-          onPointerUp: _up,
-          onPointerCancel: (_) => _cancel(),
-          onPointerSignal: _signal,
-          onPointerPanZoomUpdate: _panZoom,
-          child: GestureDetector(
-            onSecondaryTapUp: (d) => _menu(d.localPosition, d.globalPosition),
-            child: SizedBox.expand(
-              key: _viewKey,
-              child: CustomPaint(
-                painter: UiCanvasPainter(
-                  session: session,
-                  hovered: _drag == null ? _hover : null,
-                  marquee: _marquee,
-                  insertMark: _insert,
-                  dragLabel: _dragLabel,
-                  repaint: _repaint,
-                ),
-              ),
+  Widget _interaction(UiScreenDocument doc, Listenable repaint) {
+    final painted = Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: _down,
+      onPointerMove: _move,
+      onPointerUp: _up,
+      onPointerCancel: (_) => _cancel(),
+      onPointerSignal: _signal,
+      onPointerPanZoomUpdate: _panZoom,
+      child: GestureDetector(
+        onSecondaryTapUp: (d) => _menu(d.localPosition, d.globalPosition),
+        child: SizedBox.expand(
+          key: _viewKey,
+          child: CustomPaint(
+            painter: UiCanvasPainter(
+              session: session,
+              overlay: _overlay,
+              repaint: repaint,
             ),
           ),
         ),
       ),
     );
+    return DragTarget<UiPaletteDrag>(
+      onWillAcceptWithDetails: (_) => !session.previewing,
+      onMove: (details) => _paletteHover(details.offset),
+      onLeave: (_) {
+        _overlay.insertMark = null;
+        _overlay.changed();
+      },
+      onAcceptWithDetails: (details) =>
+          _paletteDrop(details.data, details.offset),
+      builder: (context, _, _) => ValueListenableBuilder<MouseCursor>(
+        valueListenable: _cursor,
+        builder: (context, cursor, child) => MouseRegion(
+          cursor: cursor,
+          onHover: (e) => _hovering(e.localPosition),
+          onExit: (_) {
+            _overlay
+              ..pointer = null
+              ..hovered = null
+              ..changed();
+            _updateCursor();
+          },
+          child: child,
+        ),
+        child: painted,
+      ),
+    );
   }
 
-  MouseCursor _cursor() {
+  /// Gives the pointer the shape for what is under it.
+  void _updateCursor() {
+    final next = _cursorNow();
+    if (_cursor.value != next) _cursor.value = next;
+  }
+
+  MouseCursor _cursorNow() {
     final drag = _drag;
     if (drag?.kind == _DragKind.pan || _spaceHeld) {
       return SystemMouseCursors.grab;
     }
     final m = session.metrics;
     final primary = session.selection.firstOrNull;
-    final at = _pointer;
+    final at = _overlay.pointer;
     if (m != null &&
         primary != null &&
         at != null &&
@@ -458,10 +680,11 @@ class UiCanvasViewState extends State<UiCanvasView>
 
   void _hovering(Offset p) {
     final m = session.metrics;
-    setState(() {
-      _pointer = p;
-      _hover = m?.pick(p);
-    });
+    _overlay
+      ..pointer = p
+      ..hovered = m?.pick(p)
+      ..changed();
+    _updateCursor();
   }
 
   // ── Pointer ────────────────────────────────────────────────────────────
@@ -480,6 +703,7 @@ class UiCanvasViewState extends State<UiCanvasView>
     if (e.buttons == kMiddleMouseButton ||
         (e.buttons == kPrimaryButton && _spaceHeld)) {
       _drag = _Drag(_DragKind.pan, p)..panAtStart = session.pan.value;
+      _updateCursor();
       return;
     }
     if (e.buttons != kPrimaryButton) return;
@@ -518,12 +742,14 @@ class UiCanvasViewState extends State<UiCanvasView>
     if (primary != null && primary.id != doc.canvas.id) {
       final r = m.viewRectOf(primary);
       final handle = r == null ? null : UiCanvasPainter.handleAt(r, p);
-      if (handle != null) {
+      final rect = m.designRectOf(primary);
+      if (handle != null && rect != null) {
         _drag = _Drag(_DragKind.resize, p)
           ..handle = handle
           ..entities = [primary]
-          ..rects = {primary: m.designRectOf(primary)!}
-          ..slots = slotsOf([primary]);
+          ..rects = {primary: rect}
+          ..slots = slotsOf([primary])
+          ..label = 'Resize ${primary.name}';
         return;
       }
     }
@@ -540,9 +766,11 @@ class UiCanvasViewState extends State<UiCanvasView>
     final additive =
         HardwareKeyboard.instance.isShiftPressed || EditorKeys.primaryPressed;
     if (picked == null || picked.id == doc.canvas.id) {
+      // Empty space: a marquee if the pointer moves, and the canvas — the
+      // screen's own settings — if it was only a click there. Selected on
+      // release, so the canvas is never left in what a marquee catches.
       if (!additive) state.clearSelection();
-      _drag = _Drag(_DragKind.marquee, p);
-      if (picked != null && !additive) state.selectEntity(picked);
+      _drag = _Drag(_DragKind.marquee, p)..onCanvas = picked != null;
       return;
     }
     if (additive) {
@@ -553,13 +781,17 @@ class UiCanvasViewState extends State<UiCanvasView>
     final moving = session.editableSelection;
     if (moving.isEmpty) return;
     final flowOnly = moving.length == 1 && !UiEditOps.isPinned(moving.first);
+    final entities = [
+      for (final e in moving)
+        if (UiEditOps.isPinned(e) || flowOnly) e,
+    ];
     _drag = _Drag(flowOnly ? _DragKind.reorder : _DragKind.move, p)
-      ..entities = [
-        for (final e in moving)
-          if (UiEditOps.isPinned(e) || flowOnly) e,
-      ]
+      ..entities = entities
       ..rects = {for (final e in moving) e: ?m.designRectOf(e)}
-      ..slots = slotsOf(moving);
+      ..slots = slotsOf(moving)
+      ..label = entities.length == 1
+          ? 'Move ${entities.first.name}'
+          : 'Move ${entities.length} elements';
   }
 
   void _move(PointerMoveEvent e) {
@@ -568,20 +800,25 @@ class UiCanvasViewState extends State<UiCanvasView>
     final m = session.metrics;
     if (drag == null || doc == null || m == null) return;
     final p = e.localPosition;
-    _pointer = p;
+    _overlay.pointer = p;
     if (!drag.started) {
       // A click is not a drag: a few pixels of hand-shake moved things
       // before, and pushed an undo step for nothing.
       if ((p - drag.start).distance < kTouchSlop) return;
       drag.started = true;
       doc.history.breakMerge();
+      if (drag.kind == _DragKind.move || drag.kind == _DragKind.resize) {
+        // The panels showing what the drag changes catch up when it ends.
+        _overlay.dragging = true;
+        session.dragging.value = true;
+      }
     }
     final delta = (p - drag.start) / m.scale;
     switch (drag.kind) {
       case _DragKind.pan:
         session.pan.value = drag.panAtStart + (p - drag.start);
       case _DragKind.marquee:
-        setState(() => _marquee = Rect.fromPoints(drag.start, p));
+        _overlay.marquee = Rect.fromPoints(drag.start, p);
       case _DragKind.guide:
         _dragGuide(drag, m.toDesign(p));
       case _DragKind.move:
@@ -591,6 +828,7 @@ class UiCanvasViewState extends State<UiCanvasView>
       case _DragKind.reorder:
         _dragReorder(doc, drag, p);
     }
+    _overlay.changed();
   }
 
   void _dragMove(UiScreenDocument doc, _Drag drag, Offset delta) {
@@ -616,19 +854,13 @@ class UiCanvasViewState extends State<UiCanvasView>
       for (final e in drag.entities)
         if (drag.rects[e] case final r?) e: r.shift(shift),
     };
-    session.placeAt(
-      targets,
-      label: drag.entities.length == 1
-          ? 'Move ${drag.entities.first.name}'
-          : 'Move ${drag.entities.length} elements',
-      from: drag.slots,
-    );
+    // Applied as it goes — back where it began included — and recorded as
+    // one step when it ends.
+    session.dragTo(targets, from: drag.slots, keepSize: true);
     final first = targets.values.firstOrNull;
-    setState(
-      () => _dragLabel = first == null
-          ? null
-          : '${first.left.round()}, ${first.top.round()}',
-    );
+    _overlay.dragLabel = first == null
+        ? null
+        : '${first.left.round()}, ${first.top.round()}';
   }
 
   void _dragResize(UiScreenDocument doc, _Drag drag, Offset delta) {
@@ -649,10 +881,8 @@ class UiCanvasViewState extends State<UiCanvasView>
       ]).resize(rect, drag.handle, _threshold);
     }
     session.snapGuides.value = guides;
-    session.placeAt({e: rect}, label: 'Resize ${e.name}', from: drag.slots);
-    setState(
-      () => _dragLabel = '${rect.width.round()} × ${rect.height.round()}',
-    );
+    session.dragTo({e: rect}, from: drag.slots);
+    _overlay.dragLabel = '${rect.width.round()} × ${rect.height.round()}';
   }
 
   /// A flow child dragged along its row or column: where it would land.
@@ -703,7 +933,7 @@ class UiCanvasViewState extends State<UiCanvasView>
       final right = (before ?? after ?? own)?.right ?? p.dx + 10;
       mark = UiInsertMark(Offset(left, y), Offset(right, y));
     }
-    setState(() => _insert = mark);
+    _overlay.insertMark = mark;
   }
 
   void _dragGuide(_Drag drag, Offset design) {
@@ -726,7 +956,7 @@ class UiCanvasViewState extends State<UiCanvasView>
         end: 100000,
       ),
     ];
-    setState(() => _dragLabel = null);
+    _overlay.dragLabel = null;
     _pendingGuides = next;
   }
 
@@ -738,24 +968,15 @@ class UiCanvasViewState extends State<UiCanvasView>
     _drag = null;
     session.snapGuides.value = const [];
     if (drag == null || doc == null) {
-      setState(() {});
+      _endGesture();
       return;
     }
     final m = session.metrics;
     switch (drag.kind) {
       case _DragKind.marquee:
-        final box = _marquee;
-        if (box != null && m != null) {
-          final inside = m.inside(box);
-          final state = doc.sceneState;
-          for (final (i, entity) in inside.indexed) {
-            if (i == 0 && !state.hasAnySelection) {
-              state.selectEntity(entity);
-            } else if (!state.isInMultiSelection(entity.id)) {
-              state.toggleMultiSelect(entity);
-            }
-          }
-        }
+        _endMarquee(doc, drag, m);
+      case _DragKind.move || _DragKind.resize:
+        if (drag.started) session.endDrag(drag.slots, label: drag.label);
       case _DragKind.reorder:
         if (drag.started && drag.insertAt >= 0) {
           session.reorder(drag.entities.first, drag.insertAt);
@@ -778,38 +999,66 @@ class UiCanvasViewState extends State<UiCanvasView>
             );
           }
         }
-      default:
+      case _DragKind.pan:
         break;
     }
-    setState(() {
-      _marquee = null;
-      _insert = null;
-      _dragLabel = null;
-    });
+    _endGesture();
+  }
+
+  /// A press on empty space let go: what a marquee caught is selected —
+  /// added to the selection when Shift or the primary modifier was held —
+  /// and a click that never became one selects the canvas.
+  void _endMarquee(UiScreenDocument doc, _Drag drag, UiCanvasMetrics? m) {
+    final state = doc.sceneState;
+    final box = _overlay.marquee;
+    if (!drag.started || box == null || m == null) {
+      if (drag.onCanvas && !state.hasAnySelection) {
+        state.selectEntity(doc.canvas);
+      }
+      return;
+    }
+    final inside = m.inside(box);
+    // A screen and its elements are not selected together: the canvas
+    // gives way to what was caught.
+    if (state.selectedEntity.value?.id == doc.canvas.id && inside.isNotEmpty) {
+      state.clearSelection();
+    }
+    for (final entity in inside) {
+      if (!state.hasAnySelection) {
+        state.selectEntity(entity);
+      } else if (!state.isInMultiSelection(entity.id)) {
+        state.toggleMultiSelect(entity);
+      }
+    }
+  }
+
+  /// Clears what a gesture drew, and lets the panels catch up.
+  void _endGesture() {
+    _overlay
+      ..marquee = null
+      ..insertMark = null
+      ..dragLabel = null
+      ..dragging = false
+      ..changed();
+    if (session.dragging.value) session.dragging.value = false;
+    _updateCursor();
   }
 
   void _cancel() {
     final drag = _drag;
     final doc = _doc;
     _drag = null;
-    // A drag cut short puts things back where they began.
-    if (drag != null && drag.started && doc != null && drag.slots.isNotEmpty) {
-      final command = UiSlotEditCommand(
-        label: 'Cancel',
-        sceneState: doc.sceneState,
-        changes: {
-          for (final entry in drag.slots.entries)
-            entry.key: (UiSlotState.of(entry.key), entry.value),
-        },
-      );
-      command.redo();
+    // A drag cut short puts things back where they began, and leaves no
+    // step behind: nothing of it was recorded yet.
+    if (drag != null &&
+        drag.started &&
+        doc != null &&
+        (drag.kind == _DragKind.move || drag.kind == _DragKind.resize)) {
+      session.cancelDrag(drag.slots);
     }
+    _pendingGuides = null;
     session.snapGuides.value = const [];
-    setState(() {
-      _marquee = null;
-      _insert = null;
-      _dragLabel = null;
-    });
+    _endGesture();
   }
 
   /// Escape while dragging: the drag is dropped, and nothing else happens.
@@ -911,10 +1160,10 @@ class UiCanvasViewState extends State<UiCanvasView>
     final doc = _doc;
     if (box == null || m == null || doc == null) return;
     final p = box.globalToLocal(global);
-    setState(() {
-      _pointer = p;
-      _hover = UiCreate.parentFor(doc, m.pick(p));
-    });
+    _overlay
+      ..pointer = p
+      ..hovered = UiCreate.parentFor(doc, m.pick(p))
+      ..changed();
   }
 
   void _paletteDrop(UiPaletteDrag data, Offset global) {
@@ -933,10 +1182,10 @@ class UiCanvasViewState extends State<UiCanvasView>
       parent: parent,
       at: UiCreate.placesByAnchor(parent) ? at : null,
     );
-    setState(() {
-      _hover = null;
-      _insert = null;
-    });
+    _overlay
+      ..hovered = null
+      ..insertMark = null
+      ..changed();
   }
 
   // ── Menu ───────────────────────────────────────────────────────────────
@@ -987,7 +1236,7 @@ class UiCanvasViewState extends State<UiCanvasView>
         'delete',
         'Delete',
         icon: Icons.delete_outline,
-        shortcut: 'Del',
+        shortcut: EditorKeys.isMac ? 'Delete' : 'Del',
         enabled: editable,
       ),
       editorMenuDivider(),

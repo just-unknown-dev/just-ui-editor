@@ -74,8 +74,20 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
       project: widget.project,
       codec: widget.scope.codec,
       context: widget.scope.context,
+      // Every file the editor writes, moves or deletes: the running game
+      // and the Assets dock read it again.
+      onFilesChanged: (paths) {
+        for (final path in paths) {
+          widget.onSaved?.call(path);
+        }
+      },
     );
-    _openFirst();
+    final refused = _openFirst();
+    if (refused != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _tell('That screen does not open', refused);
+      });
+    }
     // The Theme tab starts on the open screen's own theme. Here, before
     // anything listens: the tab is built with the rest of the workspace,
     // and opening it from there changed the header in mid-build.
@@ -86,22 +98,43 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
     widget.setCloseGuard?.call(_mayLeave);
   }
 
-  void _openFirst() {
+  /// Opens what the editor was asked for, or else the game's first screen
+  /// that reads. Why what was asked for did not open, or null.
+  String? _openFirst() {
     final path = widget.path;
+    String? refused;
     if (path != null && path.endsWith('.uitheme.json')) {
-      session.openTheme(path);
+      if (!session.openTheme(path)) refused = session.lastError;
       tab.value = 1;
     } else if (path != null && path.endsWith('.${UiDocument.extension}')) {
-      if (session.open(path)) return;
+      if (session.open(path)) return null;
+      refused = session.lastError;
     }
-    if (session.document.value != null) return;
+    if (session.document.value != null) return refused;
     final listed = session.manifest.value.screens;
     for (final entry in listed) {
-      if (session.open(entry.path)) return;
+      if (session.open(entry.path)) return refused;
     }
     final files = session.files.value;
     if (files.isNotEmpty) session.open(files.first);
+    return refused;
   }
+
+  /// Says [message] in a box with an OK button.
+  Future<void> _tell(String title, String? message) => showDialog<void>(
+    context: context,
+    builder: (context) => EditorAlert(
+      title: title,
+      message: message ?? 'Something went wrong.',
+      actions: [
+        EditorButton(
+          label: 'OK',
+          kind: EditorButtonKind.primary,
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ],
+    ),
+  );
 
   @override
   void dispose() {
@@ -132,15 +165,20 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
     return '${what.join(' and ')} $verb changes that are not saved.';
   }
 
-  /// Saves what is unsaved, and tells the editor which files changed.
+  /// Saves what is unsaved. False — and says why — when something was not
+  /// written; it stays unsaved then. (The session tells the editor which
+  /// files changed.)
   bool save() {
-    final doc = session.document.value;
-    final theme = session.theme.value;
-    final docDirty = doc?.dirty.value ?? false;
-    final themeDirty = theme?.dirty.value ?? false;
+    session.lastError = null;
     final ok = session.saveAll();
-    if (docDirty && doc != null) widget.onSaved?.call(doc.path);
-    if (themeDirty && theme != null) widget.onSaved?.call(theme.path);
+    if (!ok) _tell('Not saved', session.lastError);
+    return ok;
+  }
+
+  /// Saves the open screen alone — before another is opened in its place.
+  bool _saveScreen() {
+    final ok = session.save();
+    if (!ok) _tell('Not saved', session.lastError);
     return ok;
   }
 
@@ -148,6 +186,8 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
     if (await _mayLeave()) widget.onClose?.call();
   }
 
+  /// Opens the screen at [path] — asking about the open one's unsaved work
+  /// first — and says so when it does not read.
   Future<void> openScreen(String path) async {
     final doc = session.document.value;
     if (doc?.path == path) return;
@@ -156,33 +196,63 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
       dirty: doc?.dirty.value ?? false,
       title: 'Save ${doc?.name}?',
       message: '${doc?.name} has changes that are not saved.',
-      save: () async => session.save(),
+      save: () async => _saveScreen(),
     );
-    if (go) session.open(path);
+    if (!go || !mounted) return;
+    if (!session.open(path)) {
+      await _tell('That screen does not open', session.lastError);
+    }
+  }
+
+  /// Copies the screen at [path] and opens the copy — asking about the
+  /// open screen's unsaved work first, as any other opening does.
+  Future<void> duplicateScreen(String path) async {
+    final copy = session.duplicateScreen(path);
+    if (copy == null) {
+      await _tell('Not copied', session.lastError);
+      return;
+    }
+    await openScreen(copy);
   }
 
   Future<void> _newScreen({required bool isScreen}) async {
-    final name = await promptForName(
-      context,
-      isScreen ? 'New screen' : 'New layer',
-      session.freeScreenName(isScreen ? 'Screen' : 'Layer'),
-    );
-    if (name == null || name.isEmpty || !mounted) return;
+    var suggestion = session.freeScreenName(isScreen ? 'Screen' : 'Layer');
+    String? name;
+    while (true) {
+      name = await promptForName(
+        context,
+        isScreen ? 'New screen' : 'New layer',
+        suggestion,
+      );
+      if (name == null || name.isEmpty || !mounted) return;
+      final free = session.freeScreenName(name);
+      if (free == name) break;
+      // Taken — by another screen, or by a file the name would go to: say
+      // so, and offer a free one, rather than quietly making another.
+      await _tell(
+        'That name is taken',
+        'Another screen is already called $name, or its file '
+            '(${session.pathFor(name)}) is there already.',
+      );
+      if (!mounted) return;
+      suggestion = free;
+    }
     final doc = session.document.value;
     final go = await mayLeaveUnsaved(
       context,
       dirty: doc?.dirty.value ?? false,
       title: 'Save ${doc?.name}?',
-      save: () async => session.save(),
+      save: () async => _saveScreen(),
     );
-    if (!go) return;
-    final made = session.createScreen(
-      session.freeScreenName(name),
-      isScreen: isScreen,
-      startOpen: !isScreen,
-    );
-    widget.onSaved?.call(made.path);
-    widget.onSaved?.call('assets/ui/screens.json');
+    if (!go || !mounted) return;
+    try {
+      session.createScreen(name, isScreen: isScreen, startOpen: !isScreen);
+    } on Object catch (error) {
+      await _tell('Not made', switch (error) {
+        FormatException(:final message) => message,
+        _ => '$error',
+      });
+    }
   }
 
   // ── History ────────────────────────────────────────────────────────────
@@ -242,6 +312,12 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
     // plain keys either.
     if (EditorKeys.otherPressed) return KeyEventResult.ignored;
 
+    // Delete everywhere, and Backspace on a Mac, whose keyboard calls it
+    // delete — the editor's rule for what deletes.
+    if (EditorKeys.isDeleteKey(key)) {
+      session.deleteSelection();
+      return KeyEventResult.handled;
+    }
     switch (key) {
       case LogicalKeyboardKey.escape:
         // One step back at a time: a drag, then the selection, then out.
@@ -255,8 +331,6 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
           break;
         }
         close();
-      case LogicalKeyboardKey.delete || LogicalKeyboardKey.backspace:
-        session.deleteSelection();
       case LogicalKeyboardKey.f2:
         _hierarchy.currentState?.renameSelected();
       case LogicalKeyboardKey.arrowLeft:
@@ -373,6 +447,7 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
             session: session,
             onOpen: openScreen,
             onNew: _newScreen,
+            onDuplicate: duplicateScreen,
           ),
         ),
         Divider(height: 1, color: EditorTheme.border),
@@ -394,7 +469,7 @@ class UiEditorWorkspaceState extends State<UiEditorWorkspace> {
       Expanded(
         child: UiCanvasView(key: _canvas, session: session),
       ),
-      UiPreviewStrip(session: session),
+      UiPreviewStrip(session: session, onOpen: openScreen),
     ],
   );
 

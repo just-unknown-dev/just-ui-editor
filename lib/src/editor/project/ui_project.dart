@@ -2,11 +2,11 @@
 library;
 
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:just_editor_core/io.dart';
 import 'package:just_editor_core/just_editor_core.dart'
-    show PackageAssetPaths;
+    show PackageAssetPaths, ProjectFiles;
 
 import '../../runtime/screens/ui_document.dart';
 import '../../runtime/screens/ui_screen_manifest.dart';
@@ -16,8 +16,9 @@ import '../../runtime/theme/ui_theme.dart';
 /// the screen list, themes and fonts. Paths are project-relative with
 /// forward slashes, the way the game names its assets.
 ///
-/// Writes go to a sibling file first and are renamed into place, so a
-/// crash mid-save never leaves half a screen behind.
+/// Writes go through `ProjectFiles`: to a sibling file first, then moved
+/// over the old one, so a crash mid-save never leaves half a screen behind
+/// — and only to files the project may write ([isWritable]).
 class UiProject {
   UiProject(String root) : root = _slashed(root);
 
@@ -50,14 +51,27 @@ class UiProject {
     return rootBundle.loadString(path, cache: false);
   }
 
-  /// Writes [text] to [path], whole or not at all.
+  /// Whether [path] may be written: a file of the project, or of a package
+  /// outside pub's cache — never one that climbs out of either, or names a
+  /// drive. Paths read out of files (a screen list, a canvas's theme) are
+  /// checked with this before anything is written or deleted there.
+  bool isWritable(String path) => PackageAssetPaths.of(root).isWritable(path);
+
+  /// Refuses [path] when it is not [isWritable].
+  void _mayWrite(String path) {
+    if (!isWritable(path)) {
+      throw FileSystemException(
+        'Not a file of this project the editor may change',
+        path,
+      );
+    }
+  }
+
+  /// Writes [text] to [path], whole or not at all: when anything fails, the
+  /// file there is as it was and the error is rethrown.
   void writeSync(String path, String text) {
-    final file = _file(path);
-    file.parent.createSync(recursive: true);
-    final temp = File('${file.path}.saving');
-    temp.writeAsStringSync(text, flush: true);
-    if (file.existsSync()) file.deleteSync();
-    temp.renameSync(file.path);
+    _mayWrite(path);
+    ProjectFiles.writeStringSync(absolute(path), text);
   }
 
   /// [json] written as the editor writes every file: two-space indents and
@@ -66,14 +80,9 @@ class UiProject {
       writeSync(path, '${_pretty.convert(json)}\n');
 
   void deleteSync(String path) {
+    _mayWrite(path);
     final file = _file(path);
     if (file.existsSync()) file.deleteSync();
-  }
-
-  void renameSync(String from, String to) {
-    final target = _file(to);
-    target.parent.createSync(recursive: true);
-    _file(from).renameSync(target.path);
   }
 
   // ── Screens ────────────────────────────────────────────────────────────
@@ -93,23 +102,52 @@ class UiProject {
   void writeScreen(String path, UiDocument document) =>
       writeJsonSync(path, document.toJson());
 
-  /// The game's screen list — empty when it has none yet.
-  UiScreenManifest readManifest([String path = UiScreenManifest.defaultPath]) {
-    final text = readSync(path);
-    if (text == null) return UiScreenManifest();
+  /// The game's screen list — empty when it has none yet, and when it does
+  /// not read ([manifestProblem] says why; [writeManifest] then refuses).
+  UiScreenManifest readManifest([String path = UiScreenManifest.defaultPath]) =>
+      _manifest(path).$1;
+
+  /// Why the screen list at [path] does not read — broken JSON, or a newer
+  /// format — or null when it reads or is not there yet.
+  String? manifestProblem([String path = UiScreenManifest.defaultPath]) =>
+      _manifest(path).$2;
+
+  (UiScreenManifest, String?) _manifest(String path) {
+    final String? text;
     try {
-      return UiScreenManifest.fromJson(
-        (jsonDecode(text) as Map).cast<String, dynamic>(),
-      );
-    } on Object {
-      return UiScreenManifest();
+      text = readSync(path);
+    } on FileSystemException catch (error) {
+      return (UiScreenManifest(), error.message);
+    }
+    if (text == null) return (UiScreenManifest(), null);
+    try {
+      final json = jsonDecode(text);
+      if (json is! Map) {
+        return (UiScreenManifest(), 'it holds no JSON object');
+      }
+      return (UiScreenManifest.fromJson(json.cast<String, dynamic>()), null);
+    } on FormatException catch (error) {
+      return (UiScreenManifest(), error.message);
+    } on Object catch (error) {
+      return (UiScreenManifest(), '$error');
     }
   }
 
+  /// Writes the screen list. Throws a [FormatException], and leaves the
+  /// file exactly as it is, while the one there does not read: written
+  /// over, every screen it lists — and its theme — would be lost.
   void writeManifest(
     UiScreenManifest manifest, [
     String path = UiScreenManifest.defaultPath,
-  ]) => writeJsonSync(path, manifest.toJson());
+  ]) {
+    if (manifestProblem(path) case final problem?) {
+      throw FormatException(
+        '$path does not read ($problem), so it was left as it is. Mend it '
+        'by hand first.',
+      );
+    }
+    writeJsonSync(path, manifest.toJson());
+  }
 
   // ── Themes and fonts ───────────────────────────────────────────────────
 

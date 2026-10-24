@@ -49,17 +49,37 @@ class UiDevice {
     if (bottom != 0) 'bottom': bottom,
   };
 
+  /// The smallest side a device is given, so a frame always has room.
+  static const double minSide = 16;
+
+  /// The device [json] describes. What does not read — a file edited by
+  /// hand — falls back to a default rather than throwing: a size is kept to
+  /// at least [minSide], an inset to the size.
   factory UiDevice.fromJson(Map<String, dynamic> json) {
-    final name = json['name'] as String? ?? 'Custom';
+    final raw = json['name'];
+    final name = raw is String && raw.isNotEmpty ? raw : 'Custom';
     for (final preset in UiDevices.all) {
       if (preset.name == name) return preset;
     }
+    double read(String key, double fallback, {double min = 0}) {
+      final value = json[key];
+      if (value is! num || !value.isFinite) return fallback;
+      return value.toDouble() < min ? min : value.toDouble();
+    }
+
+    final width = read('width', 1280, min: minSide);
+    final height = read('height', 720, min: minSide);
+    double inset(String key) {
+      final value = read(key, 0);
+      return value > height / 2 ? height / 2 : value;
+    }
+
     return UiDevice(
       name,
-      (json['width'] as num?)?.toDouble() ?? 1280,
-      (json['height'] as num?)?.toDouble() ?? 720,
-      top: (json['top'] as num?)?.toDouble() ?? 0,
-      bottom: (json['bottom'] as num?)?.toDouble() ?? 0,
+      width,
+      height,
+      top: inset('top'),
+      bottom: inset('bottom'),
     );
   }
 

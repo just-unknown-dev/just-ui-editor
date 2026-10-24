@@ -325,5 +325,83 @@ void main() {
       // Folded away, its header still says what it is.
       expect(find.textContaining('screen, 1920×1080'), findsOneWidget);
     });
+
+    testWidgets('a role a file left empty reads as the default, not primary', (
+      tester,
+    ) async {
+      final entity = scope.world.createEntityWithComponents([
+        UiPanelComponent(colorRole: ''),
+        UiSlotComponent(),
+      ], name: 'Card');
+
+      await pumpSections(tester, entity);
+
+      expect(find.text('(its default)'), findsOneWidget);
+    });
+
+    testWidgets('a gradient is colours to pick, one more at a time', (
+      tester,
+    ) async {
+      final panel = UiPanelComponent(
+        gradient: const [Color(0xFF112233), Color(0xFF445566)],
+      );
+      final entity = scope.world.createEntityWithComponents([
+        panel,
+        UiSlotComponent(),
+      ], name: 'Card');
+
+      await pumpSections(tester, entity);
+
+      final row = find.ancestor(
+        of: find.text('Gradient'),
+        matching: find.byType(Row),
+      );
+      expect(
+        find.descendant(of: row.first, matching: find.byType(MiniColorField)),
+        findsNWidgets(2),
+      );
+      await tester.tap(find.byTooltip('Add a colour'));
+      await tester.pump();
+      expect(panel.gradient, hasLength(3));
+      expect(panel.gradient!.last, const Color(0xFF445566));
+
+      // Built again, as the inspector is after an edit.
+      await pumpSections(tester, entity);
+      await tester.tap(find.byTooltip('Take this colour out').first);
+      await tester.pump();
+      expect(panel.gradient, const [Color(0xFF445566), Color(0xFF445566)]);
+    });
+
+    testWidgets('a custom widget not chosen yet says so', (tester) async {
+      UiWidgets.register(
+        UiWidgetDefinition(
+          id: 'inventory_grid',
+          label: 'Inventory',
+          build: (context) => const SizedBox.shrink(),
+        ),
+      );
+      final entity = scope.world.createEntityWithComponents([
+        UiCustomComponent(),
+      ], name: 'Bag');
+
+      await pumpSections(tester, entity);
+
+      expect(find.text('(none chosen)'), findsOneWidget);
+    });
+  });
+
+  testWidgets('a game action this build has not registered still reads', (
+    tester,
+  ) async {
+    await pumpRow(
+      tester,
+      UiActionsEditorRow(
+        label: 'On press',
+        actions: const UiActionList([UiAction('custom:openShop', 'weapons')]),
+        onChanged: (_) {},
+      ),
+    );
+
+    expect(find.text('custom:openShop'), findsOneWidget);
   });
 }

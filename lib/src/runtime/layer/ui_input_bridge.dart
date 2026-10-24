@@ -2,6 +2,8 @@
 /// menus through input actions.
 library;
 
+import 'package:flutter/services.dart'
+    show KeyDownEvent, LogicalKeyboardKey, PhysicalKeyboardKey;
 import 'package:flutter/widgets.dart';
 import 'package:just_inputs/just_inputs.dart';
 
@@ -38,11 +40,17 @@ final class UiInputActions {
 ///
 /// Runs after every input update, paused or not, and stands aside while a
 /// rebind is listening.
+///
+/// A direction is given to whatever has focus first, as the arrow key
+/// would be — so a slider slides — and moves focus when that does nothing
+/// with it. In a text field it moves focus straight away: a pad cannot
+/// type, and must not be stuck there.
 final class UiInputBridge {
   UiInputBridge({
     required this.input,
     required this.layer,
     this.actions = const UiInputActions(),
+    this.takesPad,
   }) {
     _subscription = input.listenUpdates(_afterUpdate);
   }
@@ -54,6 +62,12 @@ final class UiInputBridge {
 
   final UiInputActions actions;
 
+  /// Whether the open screens take the pad now. Null: whenever a screen is
+  /// open. A game's view says so only while the game is paused or the
+  /// screen on top is modal — a banner over live play leaves the stick to
+  /// the player.
+  final bool Function(UiLayerState ui)? takesPad;
+
   late final InputSubscription _subscription;
   TraversalDirection? _held;
   double _nextRepeat = 0;
@@ -63,7 +77,7 @@ final class UiInputBridge {
     final ui = layer();
     // No screen open: this is play, and the stick is moving a character,
     // not a menu's focus.
-    if (ui == null || ui.navigator.isEmpty) {
+    if (ui == null || ui.navigator.isEmpty || !(takesPad?.call(ui) ?? true)) {
       _held = null;
       return;
     }
@@ -117,8 +131,49 @@ final class UiInputBridge {
     return v.dy > 0 ? TraversalDirection.down : TraversalDirection.up;
   }
 
-  static void _move(TraversalDirection direction) =>
-      FocusManager.instance.primaryFocus?.focusInDirection(direction);
+  static void _move(TraversalDirection direction) {
+    final focus = FocusManager.instance.primaryFocus;
+    if (focus == null) return;
+    final typing =
+        focus.context?.findAncestorStateOfType<EditableTextState>() != null;
+    if (!typing && _offer(focus, direction)) return;
+    focus.focusInDirection(direction);
+  }
+
+  /// Gives [direction] to the focused widget and those around it as the
+  /// arrow key, the way a key press travels; true when one of them took
+  /// it — a slider moving, a menu moving its own focus.
+  static bool _offer(FocusNode focus, TraversalDirection direction) {
+    final (logical, physical) = switch (direction) {
+      TraversalDirection.up => (
+        LogicalKeyboardKey.arrowUp,
+        PhysicalKeyboardKey.arrowUp,
+      ),
+      TraversalDirection.down => (
+        LogicalKeyboardKey.arrowDown,
+        PhysicalKeyboardKey.arrowDown,
+      ),
+      TraversalDirection.left => (
+        LogicalKeyboardKey.arrowLeft,
+        PhysicalKeyboardKey.arrowLeft,
+      ),
+      TraversalDirection.right => (
+        LogicalKeyboardKey.arrowRight,
+        PhysicalKeyboardKey.arrowRight,
+      ),
+    };
+    final key = KeyDownEvent(
+      physicalKey: physical,
+      logicalKey: logical,
+      timeStamp: Duration.zero,
+    );
+    for (FocusNode? node = focus; node != null; node = node.parent) {
+      final result = node.onKeyEvent?.call(node, key);
+      if (result == KeyEventResult.handled) return true;
+      if (result == KeyEventResult.skipRemainingHandlers) return false;
+    }
+    return false;
+  }
 
   void dispose() => _subscription.cancel();
 }

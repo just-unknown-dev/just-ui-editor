@@ -122,6 +122,26 @@ abstract final class UiBindings {
     return out.toString();
   }
 
+  /// The words a player reads for [source]: a leading `@` looks the rest up
+  /// through [localise] (the key shows when there is none), then every
+  /// `{binding}` is filled in.
+  ///
+  /// What every piece of interface text goes through — a text, a button's
+  /// label, a toggle's, a field's hint — so `@menu.resume` works wherever
+  /// the inspector offers it.
+  static String resolveText(
+    String source, {
+    Entity? self,
+    String Function(String key)? localise,
+  }) {
+    var text = source;
+    if (text.startsWith('@') && text.length > 1) {
+      final key = text.substring(1);
+      text = localise?.call(key) ?? key;
+    }
+    return interpolate(text, self: self);
+  }
+
   /// Every binding [source] asks for, in the order it asks.
   static List<String> namesIn(String source) {
     final found = <String>[];
@@ -152,33 +172,44 @@ abstract final class UiBindings {
   /// - `0`, `0.00` — a number with that many decimals
   /// - `%`, `%0` — a fraction as a percentage
   /// - nothing — `toString`, with whole doubles losing their `.0`
+  ///
+  /// A number that is not finite (a division by zero, NaN) is written as
+  /// Dart writes it — `Infinity`, `NaN` — whatever the pattern: it is
+  /// read every frame, and must never throw.
   static String format(Object? value, [String? pattern]) {
     if (value == null) return '';
     if (pattern == null || pattern.isEmpty) {
-      if (value is double && value == value.roundToDouble()) {
+      if (value is double &&
+          value.isFinite &&
+          value.abs() < 1e15 &&
+          value == value.roundToDouble()) {
         return value.toInt().toString();
       }
       return '$value';
     }
     final number = value is num ? value.toDouble() : double.tryParse('$value');
     if (number == null) return '$value';
+    if (!number.isFinite) return '$number';
 
     if (pattern.contains(':') || pattern == 'S') return _clock(number, pattern);
     if (pattern.startsWith('%')) {
-      final digits = int.tryParse(pattern.substring(1)) ?? 0;
+      final digits = _digits(int.tryParse(pattern.substring(1)) ?? 0);
       return '${(number * 100).toStringAsFixed(digits)}%';
     }
     if (pattern.startsWith('n')) {
-      final digits = int.tryParse(pattern.substring(1)) ?? 0;
+      final digits = _digits(int.tryParse(pattern.substring(1)) ?? 0);
       return _grouped(number.toStringAsFixed(digits));
     }
     if (pattern.startsWith('0')) {
       final dot = pattern.indexOf('.');
-      final digits = dot < 0 ? 0 : pattern.length - dot - 1;
+      final digits = _digits(dot < 0 ? 0 : pattern.length - dot - 1);
       return number.toStringAsFixed(digits);
     }
     return '$value';
   }
+
+  /// What `toStringAsFixed` accepts: 0 to 20 decimals.
+  static int _digits(int asked) => asked.clamp(0, 20);
 
   /// [seconds] laid out as [pattern] says: `mm:ss`, `h:mm:ss`, `m:ss.S`.
   static String _clock(double seconds, String pattern) {
@@ -229,10 +260,20 @@ abstract final class UiBindings {
   }
 
   /// What the engine offers about itself, for anything that has not been
-  /// given a game of its own. Called once by `registerUiSystems`.
+  /// given a game of its own. Called by `registerUiSystems` and whenever a
+  /// screens world is made; a game's own `self.name` or `self.id`, set
+  /// before or after, is kept.
   static void registerBuiltIns() {
-    registerForEntity('name', (e) => e.name ?? '');
-    registerForEntity('id', (e) => e.id);
+    _perEntity.putIfAbsent(
+      'name',
+      () =>
+          (e) => e.name ?? '',
+    );
+    _perEntity.putIfAbsent(
+      'id',
+      () =>
+          (e) => e.id,
+    );
   }
 
   /// A fraction of the way from [from] to [to], for a bar reading two

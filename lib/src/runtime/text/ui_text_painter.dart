@@ -77,15 +77,28 @@ class UiTextAnimation {
 /// Lays out and draws rich text on a canvas.
 ///
 /// Made once and reused: laying text out is the expensive part, and this
-/// only redoes it when something it was given actually changed.
+/// only redoes it when something it was given actually changed. Whatever
+/// it lays out — the text, its outline, its letters one by one — is kept
+/// until then, so a frame that changes nothing only paints.
 class UiTextPainter {
   UiTextPainter();
 
   final TextPainter _painter = TextPainter(textDirection: TextDirection.ltr);
 
+  /// The outline: the same text, stroked. Laid out with [_painter].
+  TextPainter? _stroke;
+
+  /// The gradient's paint, over the laid-out box.
+  Paint? _gradient;
+
+  /// Text that moves or changes colour, a letter at a time, made on the
+  /// first paint after a layout.
+  List<_Glyph>? _glyphs;
+
   UiRichText _text = UiRichText.empty;
   UiTextStyle _style = const UiTextStyle();
   UiTextLayout _layout = const UiTextLayout();
+  TextScaler _scaler = TextScaler.noScaling;
   double _fittedSize = 0;
   bool _dirty = true;
 
@@ -104,17 +117,25 @@ class UiTextPainter {
   );
 
   /// What to draw and how. Nothing is laid out until [layout].
+  ///
+  /// [textScaler] is the player's text size, as a screen's `MediaQuery`
+  /// gives it; world text is drawn as written.
   void set({
     required UiRichText text,
     required UiTextStyle style,
     UiTextLayout layout = const UiTextLayout(),
+    TextScaler textScaler = TextScaler.noScaling,
   }) {
-    if (_sameText(text, _text) && style == _style && _sameLayout(layout)) {
+    if (text.sameAs(_text) &&
+        style == _style &&
+        _sameLayout(layout) &&
+        textScaler == _scaler) {
       return;
     }
     _text = text;
     _style = style;
     _layout = layout;
+    _scaler = textScaler;
     _dirty = true;
   }
 
@@ -126,25 +147,26 @@ class UiTextPainter {
       other.maxLines == _layout.maxLines &&
       other.minSize == _layout.minSize;
 
-  static bool _sameText(UiRichText a, UiRichText b) =>
-      identical(a, b) ||
-      (a.plain == b.plain && a.spans.length == b.spans.length);
-
   /// Measures the text, shrinking it if that is what was asked for.
   void layout() {
     if (!_dirty) return;
     _dirty = false;
+    _forgetGlyphs();
     final wanted = _style.effectiveSize;
     _fittedSize = wanted;
 
     if (_layout.overflow != UiTextOverflow.shrink) {
       _layoutAt(wanted);
-      return;
+    } else {
+      _shrink(wanted);
     }
+    _layoutDecorations();
+  }
 
-    // Come down a point at a time until it fits. A binary search would do
-    // fewer layouts, but text jumps a whole line at a time as it shrinks,
-    // so stepping is what actually lands on the largest size that fits.
+  /// Comes down a point at a time until it fits. A binary search would do
+  /// fewer layouts, but text jumps a whole line at a time as it shrinks, so
+  /// stepping is what actually lands on the largest size that fits.
+  void _shrink(double wanted) {
     for (var size = wanted; size >= _layout.minSize; size -= 1) {
       _layoutAt(size);
       if (_fits) {
@@ -171,10 +193,48 @@ class UiTextPainter {
     _painter
       ..text = _text.toTextSpan(_style.copyWith(size: size))
       ..textAlign = _layout.align.flutter
+      ..textScaler = _scaler
       ..maxLines = _layout.maxLines
       ..ellipsis = _layout.overflow == UiTextOverflow.ellipsis ? '…' : null
       ..layout(maxWidth: _layout.maxWidth ?? double.infinity);
   }
+
+  /// The outline and the gradient, for the text as it was just laid out.
+  void _layoutDecorations() {
+    final resolved = _style.over(UiTextStyle.fallback);
+    final outline = resolved.outline;
+    _stroke?.dispose();
+    _stroke = null;
+    if (outline != null && outline.isVisible) {
+      _stroke = TextPainter(
+        textDirection: TextDirection.ltr,
+        textAlign: _layout.align.flutter,
+        textScaler: _scaler,
+        maxLines: _layout.maxLines,
+        ellipsis: _painter.ellipsis,
+        text: _text.toTextSpan(
+          _style.copyWith(size: _fittedSize),
+          foreground: _strokePaint(outline),
+        ),
+      )..layout(maxWidth: _layout.maxWidth ?? double.infinity);
+    }
+    final colors = resolved.gradient;
+    _gradient = colors != null && colors.length > 1
+        ? (Paint()
+            ..blendMode = BlendMode.srcIn
+            ..shader = LinearGradient(
+              colors: colors,
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ).createShader(Offset.zero & _painter.size))
+        : null;
+  }
+
+  static Paint _strokePaint(UiTextOutline outline) => Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = outline.width
+    ..strokeJoin = StrokeJoin.round
+    ..color = outline.color;
 
   /// Draws the text centred on [at].
   ///
@@ -186,124 +246,171 @@ class UiTextPainter {
   }) {
     layout();
     final origin = at - Offset(_painter.width / 2, _painter.height / 2);
-    final resolved = _style.over(UiTextStyle.fallback);
 
-    if (_text.spans.any((s) => s.effect.movesGlyphs)) {
-      _paintMoving(canvas, origin, animation, resolved);
+    if (_text.animates) {
+      _paintGlyphs(canvas, origin, animation);
       return;
     }
 
-    final outline = resolved.outline;
-    if (outline != null && outline.isVisible) {
-      _paintOutline(canvas, origin, outline);
-    }
-    final gradient = resolved.gradient;
-    if (gradient != null && gradient.length > 1) {
-      _paintGradient(canvas, origin, gradient);
+    _stroke?.paint(canvas, origin);
+    final gradient = _gradient;
+    if (gradient != null) {
+      // Colours swept across the whole block of text.
+      canvas
+        ..save()
+        ..translate(origin.dx, origin.dy);
+      final rect = Offset.zero & _painter.size;
+      canvas.saveLayer(rect, Paint());
+      _painter.paint(canvas, Offset.zero);
+      canvas
+        ..drawRect(rect, gradient)
+        ..restore()
+        ..restore();
       return;
     }
     _painter.paint(canvas, origin);
   }
 
-  /// The outline: the same glyphs drawn as a thick stroke underneath.
-  void _paintOutline(Canvas canvas, Offset origin, UiTextOutline outline) {
-    final foreground = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = outline.width
-      ..strokeJoin = StrokeJoin.round
-      ..color = outline.color;
-    final stroked = TextPainter(
-      textDirection: TextDirection.ltr,
-      textAlign: _layout.align.flutter,
-      maxLines: _layout.maxLines,
-      ellipsis: _painter.ellipsis,
-      text: _text.toTextSpan(
-        _style
-            .copyWith(size: _fittedSize)
-            .copyWith()
-            .over(UiTextStyle.fallback),
-      ),
-    );
-    // The stroke rides on the same spans, with the paint swapped in.
-    stroked
-      ..text = _strokeSpan(foreground)
-      ..layout(maxWidth: _layout.maxWidth ?? double.infinity)
-      ..paint(canvas, origin);
+  /// Text that moves or changes colour: each letter drawn on its own,
+  /// where the laid-out text put it — so it wraps, aligns and breaks lines
+  /// as the still text would. A gradient does not combine with these.
+  void _paintGlyphs(Canvas canvas, Offset origin, UiTextAnimation animation) {
+    final glyphs = _glyphs ??= _makeGlyphs();
+    for (final glyph in glyphs) {
+      final at = origin + glyph.offset + _offsetFor(glyph, animation);
+      glyph.stroke?.paint(canvas, at);
+      final color = _colorFor(glyph, animation);
+      if (color != null) {
+        glyph.painter
+          ..text = TextSpan(
+            text: glyph.text,
+            style: glyph.style.copyWith(color: color).toTextStyle(),
+          )
+          ..layout();
+      }
+      glyph.painter.paint(canvas, at);
+    }
   }
 
-  InlineSpan _strokeSpan(Paint foreground) {
+  List<_Glyph> _makeGlyphs() {
     final base = _style.copyWith(size: _fittedSize);
-    return TextSpan(
-      children: [
-        for (final span in _text.spans)
-          TextSpan(
-            text: span.isIcon ? ' ' : span.text,
-            style: span.style
-                .over(base)
-                .toTextStyle()
-                .copyWith(foreground: foreground, shadows: const []),
-          ),
-      ],
-    );
-  }
-
-  /// Colours swept across the whole block of text.
-  void _paintGradient(Canvas canvas, Offset origin, List<Color> colors) {
-    final rect = origin & _painter.size;
-    canvas.saveLayer(rect, Paint());
-    _painter.paint(canvas, origin);
-    canvas.drawRect(
-      rect,
-      Paint()
-        ..blendMode = BlendMode.srcIn
-        ..shader = LinearGradient(
-          colors: colors,
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ).createShader(rect),
-    );
-    canvas.restore();
-  }
-
-  /// Text whose letters move: each is laid out and drawn on its own, which
-  /// is why this is kept for the spans that ask for it.
-  void _paintMoving(
-    Canvas canvas,
-    Offset origin,
-    UiTextAnimation animation,
-    UiTextStyle resolved,
-  ) {
-    final base = _style.copyWith(size: _fittedSize);
+    final outline = _style.over(UiTextStyle.fallback).outline;
+    final stroke = outline != null && outline.isVisible
+        ? _strokePaint(outline)
+        : null;
+    final out = <_Glyph>[];
+    var offset = 0;
     var index = 0;
-    var x = origin.dx;
-    final glyph = TextPainter(textDirection: TextDirection.ltr);
+
+    void add(
+      String text,
+      InlineSpan run,
+      InlineSpan? stroked,
+      _Glyph Function(
+        TextPainter painter,
+        TextPainter? strokePainter,
+        Offset at,
+      )
+      make,
+    ) {
+      final boxes = _painter.getBoxesForSelection(
+        TextSelection(baseOffset: offset, extentOffset: offset + text.length),
+      );
+      offset += text.length;
+      if (boxes.isEmpty) return; // cut off by maxLines or an ellipsis
+      final box = boxes.first;
+      TextPainter laid(InlineSpan span) => TextPainter(
+        text: span,
+        textDirection: TextDirection.ltr,
+        textScaler: _scaler,
+      )..layout();
+      out.add(
+        make(
+          laid(run),
+          stroked == null ? null : laid(stroked),
+          Offset(box.left, box.top),
+        ),
+      );
+    }
 
     for (final span in _text.spans) {
       final style = span.style.over(base);
-      for (final char in span.text.characters) {
-        glyph
-          ..text = TextSpan(text: char, style: style.toTextStyle())
-          ..layout();
-        final offset = _offsetFor(span.effect, index, animation);
-        final color = _colorFor(span.effect, index, animation, style);
-        if (color != null) {
-          glyph
-            ..text = TextSpan(
-              text: char,
-              style: style.copyWith(color: color).toTextStyle(),
-            )
-            ..layout();
+      if (span.isIcon) {
+        final run = UiIcons.spanFor(span.icon!, style, widgets: false);
+        final text = run is TextSpan ? run.text ?? '' : '';
+        if (run != null && text.isNotEmpty) {
+          final at = index;
+          add(
+            text,
+            run,
+            stroke == null
+                ? null
+                : UiIcons.spanFor(
+                    span.icon!,
+                    style,
+                    widgets: false,
+                    foreground: stroke,
+                  ),
+            (painter, strokePainter, where) => _Glyph(
+              text: text,
+              style: style,
+              effect: span.effect,
+              index: at,
+              offset: where,
+              painter: painter,
+              stroke: strokePainter,
+              recolours: false,
+            ),
+          );
         }
-        glyph.paint(canvas, Offset(x, origin.dy) + offset);
-        x += glyph.width;
         index++;
+        continue;
+      }
+      for (final char in span.text.characters) {
+        final at = index++;
+        if (char == '\n') {
+          offset += char.length;
+          continue;
+        }
+        add(
+          char,
+          TextSpan(text: char, style: style.toTextStyle()),
+          stroke == null
+              ? null
+              : TextSpan(
+                  text: char,
+                  style: style.toTextStyle().copyWith(
+                    foreground: stroke,
+                    shadows: const [],
+                  ),
+                ),
+          (painter, strokePainter, where) => _Glyph(
+            text: char,
+            style: style,
+            effect: span.effect,
+            index: at,
+            offset: where,
+            painter: painter,
+            stroke: strokePainter,
+            recolours: true,
+          ),
+        );
       }
     }
+    return out;
   }
 
-  Offset _offsetFor(UiTextEffect effect, int index, UiTextAnimation a) {
+  void _forgetGlyphs() {
+    for (final glyph in _glyphs ?? const <_Glyph>[]) {
+      glyph.dispose();
+    }
+    _glyphs = null;
+  }
+
+  Offset _offsetFor(_Glyph glyph, UiTextAnimation a) {
     final t = a.seconds * a.speed;
-    return switch (effect) {
+    final index = glyph.index;
+    return switch (glyph.effect) {
       UiTextEffect.wave => Offset(
         0,
         math.sin(t * 6 + index * 0.6) * a.amplitude,
@@ -318,14 +425,11 @@ class UiTextPainter {
     };
   }
 
-  Color? _colorFor(
-    UiTextEffect effect,
-    int index,
-    UiTextAnimation a,
-    UiTextStyle style,
-  ) {
+  Color? _colorFor(_Glyph glyph, UiTextAnimation a) {
+    if (!glyph.recolours) return null;
     final t = a.seconds * a.speed;
-    switch (effect) {
+    final index = glyph.index;
+    switch (glyph.effect) {
       case UiTextEffect.rainbow:
         return HSVColor.fromAHSV(
           1,
@@ -334,11 +438,54 @@ class UiTextPainter {
           1,
         ).toColor();
       case UiTextEffect.pulse:
-        final base = style.color ?? const Color(0xFFFFFFFF);
+        final base = glyph.style.color ?? const Color(0xFFFFFFFF);
         final alpha = 0.55 + 0.45 * math.sin(t * 4 + index * 0.2);
         return base.withValues(alpha: alpha.clamp(0.0, 1.0));
       default:
         return null;
     }
+  }
+
+  /// Lets go of what was laid out. The painter is not used again.
+  void dispose() {
+    _forgetGlyphs();
+    _stroke?.dispose();
+    _stroke = null;
+    _painter.dispose();
+  }
+}
+
+/// One letter of animated text, laid out on its own.
+class _Glyph {
+  _Glyph({
+    required this.text,
+    required this.style,
+    required this.effect,
+    required this.index,
+    required this.offset,
+    required this.painter,
+    required this.stroke,
+    required this.recolours,
+  });
+
+  final String text;
+  final UiTextStyle style;
+  final UiTextEffect effect;
+
+  /// Its place in the text, letters and icons counted, for the effects.
+  final int index;
+
+  /// Where the laid-out text put it, from the text's top-left.
+  final Offset offset;
+
+  final TextPainter painter;
+  final TextPainter? stroke;
+
+  /// Whether a colour effect may relayout it (an icon keeps its own look).
+  final bool recolours;
+
+  void dispose() {
+    painter.dispose();
+    stroke?.dispose();
   }
 }

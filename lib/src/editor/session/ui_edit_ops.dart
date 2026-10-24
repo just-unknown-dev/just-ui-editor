@@ -3,6 +3,8 @@ library;
 
 import 'dart:ui';
 
+import 'package:flutter/painting.dart' show EdgeInsets;
+
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/just_editor_core.dart';
 
@@ -85,6 +87,8 @@ extension UiEditOps on UiEditorSession {
           ],
           codec: doc.codec,
           parentName: parentName,
+          // A copy of something switched off is switched off too.
+          enabled: spec.enabled,
         ),
       );
       for (final id
@@ -101,15 +105,16 @@ extension UiEditOps on UiEditorSession {
     return out;
   }
 
-  /// Makes [records] again under [parent], with names of their own, as one
-  /// step, and selects the new roots. [nudge] moves pinned copies so they
-  /// do not sit exactly on what they were copied from.
+  /// Makes [records] again, with names of their own, as one step, and
+  /// selects the new roots: the root numbered `n` (in the order the roots
+  /// come in [records]) under the parent [placeOf] gives it, at the index it
+  /// gives (-1 for last). [nudge] moves pinned copies so they do not sit
+  /// exactly on what they were copied from.
   List<Entity> _makeAgain(
     UiScreenDocument doc,
     List<EntitySpec> records, {
-    required Entity parent,
+    required (Entity, int) Function(int root) placeOf,
     required String label,
-    int index = -1,
     Offset nudge = Offset.zero,
   }) {
     final renamed = <String?, String>{};
@@ -126,22 +131,30 @@ extension UiEditOps on UiEditorSession {
     }
 
     final specs = <EntitySpec>[];
-    var rootIndex = index;
+    var roots = 0;
     for (final record in records) {
       final name = fresh(record.name);
       renamed[record.name] = name;
       final isRoot = record.parentName == null;
       var json = record.componentsJson;
-      if (isRoot) {
-        json = _fitSlotTo(doc, json, parent, nudge);
+      final (Entity, int)? place = isRoot ? placeOf(roots++) : null;
+      if (place != null) {
+        json = _fitSlotTo(doc, json, place.$1, nudge);
       }
       specs.add(
         EntitySpec(
           name: name,
           componentsJson: json,
           codec: doc.codec,
-          parentName: isRoot ? parent.name : renamed[record.parentName],
-          siblingIndex: isRoot && rootIndex >= 0 ? rootIndex++ : -1,
+          // A root goes under its parent by id — names need not tell two
+          // entities apart; a child under its copied parent, by the name
+          // that copy was just given.
+          parentId: place?.$1.id,
+          parentName: place != null
+              ? place.$1.name
+              : renamed[record.parentName],
+          siblingIndex: place?.$2 ?? -1,
+          enabled: record.enabled,
         ),
       );
     }
@@ -203,25 +216,40 @@ extension UiEditOps on UiEditorSession {
     final doc = _document;
     final originals = editableSelection;
     if (doc == null || originals.isEmpty) return;
-    // Each beside its original, under the same parent.
-    final first = originals.first;
-    final parentId = first.getComponent<ParentComponent>()?.parentId;
-    final parent = parentId == null
-        ? doc.canvas
-        : doc.world.getEntity(parentId);
-    if (parent == null) return;
-    final siblings = parent.getComponent<ChildrenComponent>()?.childIds ?? [];
-    final after = siblings.indexOf(first.id);
+    // Each beside its own original, under that one's parent. Made from the
+    // last place in a parent to the first, so a copy put in never moves the
+    // place the next one is counted from.
+    final placed = <({Entity entity, Entity parent, int index})>[];
+    for (final e in originals) {
+      final parent = _parentOf(doc, e);
+      final siblings = parent.getComponent<ChildrenComponent>()?.childIds;
+      placed.add((
+        entity: e,
+        parent: parent,
+        index: siblings?.indexOf(e.id) ?? -1,
+      ));
+    }
+    placed.sort((a, b) {
+      final byParent = a.parent.id.compareTo(b.parent.id);
+      return byParent != 0 ? byParent : b.index.compareTo(a.index);
+    });
     _makeAgain(
       doc,
-      _recordsOf(doc, originals),
-      parent: parent,
+      _recordsOf(doc, [for (final p in placed) p.entity]),
+      placeOf: (root) {
+        final p = placed[root];
+        return (p.parent, p.index < 0 ? -1 : p.index + 1);
+      },
       label: originals.length == 1
-          ? 'Duplicate ${first.name}'
+          ? 'Duplicate ${originals.first.name}'
           : 'Duplicate ${originals.length} elements',
-      index: after < 0 ? -1 : after + 1,
       nudge: const Offset(16, 16),
     );
+  }
+
+  static Entity _parentOf(UiScreenDocument doc, Entity e) {
+    final id = e.getComponent<ParentComponent>()?.parentId;
+    return (id == null ? null : doc.world.getEntity(id)) ?? doc.canvas;
   }
 
   /// The screen editor's clipboard, shared by every screen it opens.
@@ -247,7 +275,7 @@ extension UiEditOps on UiEditorSession {
     _makeAgain(
       doc,
       copied.records,
-      parent: parent,
+      placeOf: (_) => (parent, -1),
       label: 'Paste',
       nudge: const Offset(16, 16),
     );
@@ -261,21 +289,43 @@ extension UiEditOps on UiEditorSession {
   static bool isPinned(Entity entity) =>
       entity.getComponent<UiSlotComponent>()?.mode == UiSlotMode.anchored;
 
+  /// [value] to a hundredth of a design pixel: what a drag measures back
+  /// from the layout carries the transform's rounding (`199.99999999999997`),
+  /// which is noise in a file and makes a drag that ended where it began
+  /// look like an edit.
+  static double _tidy(double value) => (value * 100).roundToDouble() / 100;
+
+  static Offset _tidyOffset(Offset o) => Offset(_tidy(o.dx), _tidy(o.dy));
+
+  static Size _tidySize(Size s) => Size(_tidy(s.width), _tidy(s.height));
+
+  static EdgeInsets _tidyInsets(EdgeInsets e) => EdgeInsets.fromLTRB(
+    _tidy(e.left),
+    _tidy(e.top),
+    _tidy(e.right),
+    _tidy(e.bottom),
+  );
+
   /// The slot that would put each of [targets] at its rectangle (design
   /// pixels of the canvas), or leaves one it cannot place alone.
-  Map<UiSlotComponent, (UiSlotState, UiSlotState)> _placements(
+  ///
+  /// [from] is where each started (a drag in progress); [keepSize] keeps
+  /// each slot's own size along the axes it is not stretched on — a move,
+  /// which must not take the size back from the layout.
+  Map<Entity, (UiSlotState, UiSlotState)> _placements(
     Map<Entity, Rect> targets, {
-    Map<UiSlotComponent, UiSlotState>? from,
+    Map<Entity, UiSlotState>? from,
+    bool keepSize = false,
   }) {
     final doc = _document;
     final metrics = this.metrics;
-    final out = <UiSlotComponent, (UiSlotState, UiSlotState)>{};
+    final out = <Entity, (UiSlotState, UiSlotState)>{};
     if (doc == null || metrics == null) return out;
     for (final entry in targets.entries) {
       final entity = entry.key;
       final slot = entity.getComponent<UiSlotComponent>();
       if (slot == null) continue;
-      final before = from?[slot] ?? UiSlotState.of(slot);
+      final before = from?[entity] ?? UiSlotState.of(slot);
       final parentId = entity.getComponent<ParentComponent>()?.parentId;
       final parent = parentId == null ? null : doc.world.getEntity(parentId);
       final content = parent == null ? null : metrics.contentRectOf(parent);
@@ -283,17 +333,17 @@ extension UiEditOps on UiEditorSession {
       final local = entry.value.shift(-content.topLeft);
       if (before.mode == UiSlotMode.anchored) {
         final fitted = UiGeometry.fit(_slotFrom(before), local, content.size);
-        out[slot] = (
+        out[entity] = (
           before,
           before.copyWith(
-            offset: fitted.offset,
-            size: fitted.size,
-            margin: fitted.margin,
+            offset: _tidyOffset(fitted.offset),
+            size: keepSize ? before.size : _tidySize(fitted.size),
+            margin: _tidyInsets(fitted.margin),
           ),
         );
-      } else {
+      } else if (!keepSize) {
         // In the flow only the size is the element's own to change.
-        out[slot] = (before, before.copyWith(size: entry.value.size));
+        out[entity] = (before, before.copyWith(size: _tidySize(local.size)));
       }
     }
     return out;
@@ -309,24 +359,83 @@ extension UiEditOps on UiEditorSession {
   );
 
   /// Puts each of [targets] at its rectangle, as one step labelled [label].
-  ///
-  /// [from] is where each started, for a drag: every move of one drag is
-  /// measured from where it began, so the step undone is the whole drag.
-  /// Nothing is recorded when nothing changes — a click is not an edit.
+  /// Nothing is recorded when nothing changes. [keepSize]: see
+  /// [_placements] — true for a move.
   void placeAt(
     Map<Entity, Rect> targets, {
     required String label,
-    Map<UiSlotComponent, UiSlotState>? from,
+    bool keepSize = false,
   }) {
     final doc = _document;
     if (doc == null) return;
     final command = UiSlotEditCommand(
       label: label,
       sceneState: doc.sceneState,
-      changes: _placements(targets, from: from),
+      changes: _placements(targets, keepSize: keepSize),
     );
     if (!command.changesSomething) return;
     doc.history.push(command);
+  }
+
+  /// Puts each of [targets] at its rectangle *now*, recording nothing: a
+  /// drag in progress, measured from [from], where each began. Each move of
+  /// it is applied whatever it is — back where it began included — and
+  /// [endDrag] records the whole drag as one step, or [cancelDrag] puts it
+  /// back.
+  void dragTo(
+    Map<Entity, Rect> targets, {
+    required Map<Entity, UiSlotState> from,
+    bool keepSize = false,
+  }) {
+    final doc = _document;
+    if (doc == null) return;
+    final changes = _placements(targets, from: from, keepSize: keepSize);
+    for (final MapEntry(key: entity, value: (_, after)) in changes.entries) {
+      final slot = doc.sceneState
+          .liveEntity(entity)
+          ?.getComponent<UiSlotComponent>();
+      if (slot != null) after.applyTo(slot);
+    }
+    doc.sceneState.refresh();
+  }
+
+  /// Records a drag that ended, from [from] to where its elements are now,
+  /// as one step labelled [label]. False when it moved nothing.
+  bool endDrag(Map<Entity, UiSlotState> from, {required String label}) {
+    final doc = _document;
+    if (doc == null) return false;
+    final command = UiSlotEditCommand(
+      label: label,
+      sceneState: doc.sceneState,
+      changes: {
+        for (final MapEntry(key: entity, value: before) in from.entries)
+          if (doc.sceneState.liveEntity(entity)?.getComponent<UiSlotComponent>()
+              case final slot?)
+            entity: (before, UiSlotState.of(slot)),
+      },
+    );
+    if (!command.changesSomething) return false;
+    // Its own step: two drags of one thing are two.
+    doc.history
+      ..breakMerge()
+      ..pushApplied(command);
+    doc.sceneState
+      ..markDirty()
+      ..refresh();
+    return true;
+  }
+
+  /// Puts what a drag moved back where it was in [from], recording nothing.
+  void cancelDrag(Map<Entity, UiSlotState> from) {
+    final doc = _document;
+    if (doc == null) return;
+    for (final MapEntry(key: entity, value: before) in from.entries) {
+      final slot = doc.sceneState
+          .liveEntity(entity)
+          ?.getComponent<UiSlotComponent>();
+      if (slot != null) before.applyTo(slot);
+    }
+    doc.sceneState.refresh();
   }
 
   /// Moves the pinned elements of the selection by [delta] design pixels —
@@ -339,7 +448,7 @@ extension UiEditOps on UiEditorSession {
         if (isPinned(e))
           if (metrics.designRectOf(e) case final rect?) e: rect.shift(delta),
     };
-    placeAt(targets, label: 'Nudge');
+    placeAt(targets, label: 'Nudge', keepSize: true);
   }
 
   /// Pins [entity] by [anchor] without moving it on screen.
@@ -361,16 +470,16 @@ extension UiEditOps on UiEditorSession {
         content.size,
       );
       after = after.copyWith(
-        offset: fitted.offset,
-        size: fitted.size,
-        margin: fitted.margin,
+        offset: _tidyOffset(fitted.offset),
+        size: _tidySize(fitted.size),
+        margin: _tidyInsets(fitted.margin),
       );
     }
     doc.history.breakMerge();
     final command = UiSlotEditCommand(
       label: 'Anchor ${entity.name}',
       sceneState: doc.sceneState,
-      changes: {slot: (before, after)},
+      changes: {entity: (before, after)},
     );
     if (command.changesSomething) doc.history.push(command);
   }
@@ -401,32 +510,39 @@ extension UiEditOps on UiEditorSession {
     if (bounds == null) return;
     final target = bounds;
     doc.history.breakMerge();
-    placeAt({
-      for (final entry in rects.entries)
-        entry.key: switch (how) {
-          UiAlign.left => entry.value.translate(
-            target.left - entry.value.left,
-            0,
-          ),
-          UiAlign.right => entry.value.translate(
-            target.right - entry.value.right,
-            0,
-          ),
-          UiAlign.centerX => entry.value.translate(
-            target.center.dx - entry.value.center.dx,
-            0,
-          ),
-          UiAlign.top => entry.value.translate(0, target.top - entry.value.top),
-          UiAlign.bottom => entry.value.translate(
-            0,
-            target.bottom - entry.value.bottom,
-          ),
-          UiAlign.centerY => entry.value.translate(
-            0,
-            target.center.dy - entry.value.center.dy,
-          ),
-        },
-    }, label: 'Align');
+    placeAt(
+      {
+        for (final entry in rects.entries)
+          entry.key: switch (how) {
+            UiAlign.left => entry.value.translate(
+              target.left - entry.value.left,
+              0,
+            ),
+            UiAlign.right => entry.value.translate(
+              target.right - entry.value.right,
+              0,
+            ),
+            UiAlign.centerX => entry.value.translate(
+              target.center.dx - entry.value.center.dx,
+              0,
+            ),
+            UiAlign.top => entry.value.translate(
+              0,
+              target.top - entry.value.top,
+            ),
+            UiAlign.bottom => entry.value.translate(
+              0,
+              target.bottom - entry.value.bottom,
+            ),
+            UiAlign.centerY => entry.value.translate(
+              0,
+              target.center.dy - entry.value.center.dy,
+            ),
+          },
+      },
+      label: 'Align',
+      keepSize: true,
+    );
   }
 
   /// Spreads three or more pinned elements evenly between the outermost
@@ -463,7 +579,7 @@ extension UiEditOps on UiEditorSession {
       at += extent(r) + gap;
     }
     doc.history.breakMerge();
-    placeAt(targets, label: 'Distribute');
+    placeAt(targets, label: 'Distribute', keepSize: true);
   }
 
   // ── The tree ───────────────────────────────────────────────────────────
@@ -496,13 +612,13 @@ extension UiEditOps on UiEditorSession {
     ];
     if (moving.isEmpty) return;
     final pins = UiCreate.placesByAnchor(parent);
-    final slots = <UiSlotComponent, (UiSlotState, UiSlotState)>{};
+    final slots = <Entity, (UiSlotState, UiSlotState)>{};
     for (final e in moving) {
       final slot = e.getComponent<UiSlotComponent>();
       if (slot == null) continue;
       final before = UiSlotState.of(slot);
       if (pins && before.mode != UiSlotMode.anchored) {
-        slots[slot] = (
+        slots[e] = (
           before,
           before.copyWith(
             mode: UiSlotMode.anchored,
@@ -511,7 +627,7 @@ extension UiEditOps on UiEditorSession {
           ),
         );
       } else if (!pins && before.mode != UiSlotMode.flow) {
-        slots[slot] = (before, before.copyWith(mode: UiSlotMode.flow));
+        slots[e] = (before, before.copyWith(mode: UiSlotMode.flow));
       }
     }
     doc.history.push(
@@ -570,6 +686,23 @@ extension UiEditOps on UiEditorSession {
         after: visible,
         sceneState: doc.sceneState,
         entity: entity,
+      ),
+    );
+  }
+
+  /// Switches [entity] on or off — its saved Enabled flag. One switched
+  /// off is not drawn and takes no room; the game has it, and can switch it
+  /// on. The canvas is the screen and stays on.
+  void setEnabled(Entity entity, bool enabled) {
+    final doc = _document;
+    if (doc == null || entity.id == doc.canvas.id) return;
+    if (entity.isActive == enabled) return;
+    doc.history.breakMerge();
+    doc.history.push(
+      SetEnabledCommand(
+        sceneState: doc.sceneState,
+        entity: entity,
+        enabled: enabled,
       ),
     );
   }

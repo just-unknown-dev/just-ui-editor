@@ -54,12 +54,30 @@ abstract final class UiSceneExtractor {
       );
     }
 
-    // Children by parent name, in the order the file holds them — which is
-    // the order of siblings.
-    final childrenOf = <String, List<Map<String, dynamic>>>{};
+    // Children by parent, in the order the file holds them — which is the
+    // order of siblings. A scene writes parents before their children, so
+    // a child's parent is the nearest entity before it with that name: two
+    // entities may share a name (two "Panel"s in two menus) without their
+    // children trading places. One whose parent comes later is matched to
+    // the first entity of that name.
+    final childrenOf =
+        Map<Map<String, dynamic>, List<Map<String, dynamic>>>.identity();
+    final latest = <String, Map<String, dynamic>>{};
+    final first = <String, Map<String, dynamic>>{};
     for (final e in entities) {
-      final parent = e['parentName'] as String?;
-      if (parent != null) (childrenOf[parent] ??= []).add(e);
+      final name = e['name'];
+      if (name is String) first.putIfAbsent(name, () => e);
+    }
+    for (final e in entities) {
+      final parentName = e['parentName'];
+      if (parentName is String) {
+        final parent = latest[parentName] ?? first[parentName];
+        if (parent != null && !identical(parent, e)) {
+          (childrenOf[parent] ??= []).add(e);
+        }
+      }
+      final name = e['name'];
+      if (name is String) latest[name] = e;
     }
     final taken = <Map<String, dynamic>>{};
     final documents = <UiDocument>[];
@@ -82,7 +100,7 @@ abstract final class UiSceneExtractor {
           ],
         });
         final name = entity['name'] as String?;
-        for (final child in childrenOf[name] ?? const []) {
+        for (final child in childrenOf[entity] ?? const []) {
           walk(child, name);
         }
       }
@@ -142,11 +160,12 @@ abstract final class UiSceneExtractor {
       if (c is Map) c.cast<String, dynamic>(),
   ];
 
+  /// Whether the canvas was showing: a canvas is, unless it says not.
   static bool _wasShowing(Map<String, dynamic> canvas) {
     for (final c in _components(canvas)) {
       if (c['type'] != 'UiCanvasComponent') continue;
       final fields = c['fields'];
-      return fields is Map && fields['visible'] != false;
+      return fields is! Map || fields['visible'] != false;
     }
     return false;
   }

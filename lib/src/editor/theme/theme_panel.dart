@@ -38,15 +38,38 @@ class _UiThemePanelState extends State<UiThemePanel> {
       dirty: open?.dirty.value ?? false,
       title: 'Save the theme first?',
       message: '${open?.path} has changes that are not saved.',
-      save: () async => session.saveTheme(),
+      save: () async => _save(),
     );
     if (go) session.openTheme(path);
+  }
+
+  /// Saves the theme, and says so when it was not written.
+  bool _save() {
+    final ok = session.saveTheme();
+    if (!ok && mounted) {
+      showDialog<void>(
+        context: context,
+        builder: (context) => EditorAlert(
+          title: 'Not saved',
+          message: session.lastError ?? 'The theme was not saved.',
+          actions: [
+            EditorButton(
+              label: 'OK',
+              kind: EditorButtonKind.primary,
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ],
+        ),
+      );
+    }
+    return ok;
   }
 
   @override
   Widget build(BuildContext context) {
     return SignalConsumer(
       signals: [session.theme, session.document],
+
       builder: (context, _) {
         final doc = session.theme.value;
         if (doc == null) {
@@ -66,16 +89,31 @@ class _UiThemePanelState extends State<UiThemePanel> {
           );
         }
         final screen = session.document.value;
-        return SignalConsumer(
-          // The screen's edits too: which theme it is drawn with is one.
-          signals: [doc.theme, doc.history.revision, ?screen?.history.revision],
-          builder: (context, _) => Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _header(doc),
-              Expanded(child: _tokens(doc)),
-            ],
-          ),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SignalConsumer(
+              // The screen's edits too: which theme it is drawn with is
+              // one. Only the header shows that, so only it listens.
+              signals: [
+                doc.theme,
+                doc.history.revision,
+                ?screen?.history.revision,
+              ],
+              builder: (context, _) => _header(doc),
+            ),
+            Expanded(
+              child: Listener(
+                // Every press begins a gesture of its own: two picks of
+                // one colour, a minute apart, are two steps to undo.
+                onPointerDown: (_) => doc.history.breakMerge(),
+                child: SignalBuilder<UiTheme>(
+                  signal: doc.theme,
+                  builder: (context, _, _) => _tokens(doc),
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
@@ -134,7 +172,7 @@ class _UiThemePanelState extends State<UiThemePanel> {
                 icon: Icons.save_outlined,
                 tooltip: 'Save the theme',
                 isActive: doc.dirty.value,
-                onTap: doc.dirty.value ? session.saveTheme : null,
+                onTap: doc.dirty.value ? _save : null,
               ),
             ],
           ),

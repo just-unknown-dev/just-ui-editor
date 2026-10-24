@@ -20,8 +20,9 @@ class UiRulersPainter extends CustomPainter {
   /// frame is only laid out after the canvas is built.
   final UiCanvasMetrics? Function() metrics;
 
-  /// The pointer, in view pixels, or null when it is elsewhere.
-  final Offset? pointer;
+  /// The pointer, in view pixels, or null when it is elsewhere — asked
+  /// when painting, so a pointer moving repaints and rebuilds nothing.
+  final Offset? Function() pointer;
 
   /// The selection's box, in view pixels — asked when painting.
   final Rect? Function() selection;
@@ -141,7 +142,7 @@ class UiRulersPainter extends CustomPainter {
       if (major) _text(canvas, _format(y), Offset(1, at + 3), vertical: true);
     }
 
-    final p = pointer;
+    final p = pointer();
     if (p != null && design != Size.zero) {
       final mark = Paint()
         ..color = EditorTheme.accent
@@ -159,14 +160,33 @@ class UiRulersPainter extends CustomPainter {
   static String _format(double v) =>
       v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(1);
 
-  void _text(Canvas canvas, String text, Offset at, {required bool vertical}) {
-    final painter = TextPainter(
+  /// Labels already laid out, by text and colour: the same few dozen
+  /// numbers are drawn every time the rulers are, and laying each out
+  /// again was most of what drawing them cost.
+  static final Map<(String, int), TextPainter> _labels = {};
+
+  static TextPainter _label(String text) {
+    final color = EditorTheme.textMuted;
+    final key = (text, color.toARGB32());
+    final known = _labels[key];
+    if (known != null) return known;
+    if (_labels.length >= 400) {
+      for (final painter in _labels.values) {
+        painter.dispose();
+      }
+      _labels.clear();
+    }
+    return _labels[key] = TextPainter(
       text: TextSpan(
         text: text,
-        style: TextStyle(color: EditorTheme.textMuted, fontSize: 8.5),
+        style: TextStyle(color: color, fontSize: 8.5),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
+  }
+
+  void _text(Canvas canvas, String text, Offset at, {required bool vertical}) {
+    final painter = _label(text);
     if (!vertical) {
       painter.paint(canvas, at);
       return;

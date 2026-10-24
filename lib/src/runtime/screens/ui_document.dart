@@ -58,10 +58,18 @@ class UiDocument {
   final Map<String, dynamic> editor;
 
   /// Reads a document, migrating an older format. A newer one than this
-  /// code knows is refused rather than half-read.
+  /// code knows is refused rather than half-read, and a value of the wrong
+  /// kind (a hand edit, a merge gone wrong) is a [FormatException] naming
+  /// it — never a bare type error.
   factory UiDocument.fromJson(Map<String, dynamic> json) {
     var data = json;
-    var format = (data['format'] as num?)?.toInt() ?? currentFormat;
+    final rawFormat = data['format'];
+    if (rawFormat != null && rawFormat is! num) {
+      throw FormatException(
+        'A screen\'s "format" is $rawFormat, not a number.',
+      );
+    }
+    var format = (rawFormat as num?)?.toInt() ?? currentFormat;
     if (format > currentFormat) {
       throw FormatException(
         'This screen was saved by a newer version (format $format; this '
@@ -76,19 +84,50 @@ class UiDocument {
       data = step(data);
       format++;
     }
+    final rawEntities = data['entities'];
+    if (rawEntities != null && rawEntities is! List) {
+      throw const FormatException('A screen\'s "entities" is not a list.');
+    }
     final entities = [
-      for (final e in (data['entities'] as List? ?? const []))
+      for (final e in (rawEntities as List?) ?? const [])
         if (e is Map) e.cast<String, dynamic>(),
     ];
     if (entities.isEmpty) {
       throw const FormatException('A screen needs at least its canvas.');
     }
+    for (var i = 0; i < entities.length; i++) {
+      _checkRecord(entities[i], i);
+    }
+    final name = data['name'];
+    if (name != null && name is! String) {
+      throw FormatException('A screen\'s "name" is $name, not text.');
+    }
     final editor = data['editor'];
     return UiDocument(
-      name: data['name'] as String? ?? entities.first['name'] as String? ?? '',
+      name: name as String? ?? entities.first['name'] as String? ?? '',
       entities: entities,
       editor: editor is Map ? editor.cast<String, dynamic>() : null,
     );
+  }
+
+  /// Each entity's own keys are the kinds [instantiate] reads.
+  static void _checkRecord(Map<String, dynamic> record, int index) {
+    void expect(String key, bool Function(Object value) ok, String kind) {
+      final value = record[key];
+      if (value != null && !ok(value)) {
+        final who = record['name'] is String
+            ? '"${record['name']}"'
+            : '#$index';
+        throw FormatException(
+          'Entity $who of a screen: "$key" is $value, not $kind.',
+        );
+      }
+    }
+
+    expect('name', (v) => v is String, 'text');
+    expect('parentName', (v) => v is String, 'text');
+    expect('components', (v) => v is List, 'a list');
+    expect('enabled', (v) => v is bool, 'true or false');
   }
 
   Map<String, dynamic> toJson() => {
@@ -125,25 +164,40 @@ class UiDocument {
   /// not run half a screen.
   /// The editor passes a decoder that keeps such components instead.
   ///
-  /// A name another screen in [world] already uses is fine: everything a
-  /// screen looks up by name, it looks up below its own canvas.
+  /// Every record is read before anything is made: a screen that will not
+  /// read leaves nothing behind in [world] — no half a screen, open and in
+  /// the way.
+  ///
+  /// A name another screen in [world] already uses is fine: a screen opens
+  /// by its canvas's name, an element's `initialFocus` is looked for below
+  /// its own canvas, and `ui.show`, `ui.hide` and `timeline.play` look in
+  /// the screen they are run from before anywhere else.
   Entity instantiate(
     World world, {
     List<Component> Function(List<dynamic> components)? decode,
   }) {
+    final definitions = world.context.definitions;
+    final decoded = [
+      for (final record in entities)
+        [
+          for (final c
+              in decode?.call(record['components'] as List? ?? const []) ??
+                  _decodeStrictly(
+                    record['components'] as List? ?? const [],
+                    record['name'] as String?,
+                    definitions,
+                  ))
+            // Links are rebuilt from names below, never read from ids.
+            if (c is! ParentComponent && c is! ChildrenComponent) c,
+        ],
+    ];
+
     final made = <Entity>[];
     final byName = <String, Entity>{};
-    final definitions = world.context.definitions;
-    for (final record in entities) {
+    for (var i = 0; i < entities.length; i++) {
+      final record = entities[i];
       final name = record['name'] as String?;
-      final saved = record['components'] as List? ?? const [];
-      final components = [
-        for (final c
-            in decode?.call(saved) ?? _decodeStrictly(saved, name, definitions))
-          // Links are rebuilt from names below, never read from ids.
-          if (c is! ParentComponent && c is! ChildrenComponent) c,
-      ];
-      final entity = world.createEntityWithComponents(components, name: name);
+      final entity = world.createEntityWithComponents(decoded[i], name: name);
       if (record['enabled'] == false) entity.isActive = false;
       made.add(entity);
       if (name != null) byName.putIfAbsent(name, () => entity);

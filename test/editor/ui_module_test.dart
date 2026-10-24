@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/painting.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/just_editor_core.dart';
@@ -257,6 +258,181 @@ void main() {
       expect(module.moveScreensOut(scope), isEmpty);
       expect(File(file('assets/ui/screens.json')).existsSync(), isFalse);
       expect(scope.history.canUndo.value, isFalse);
+    });
+
+    test('a screen list that does not read is left as it is', () {
+      final world = _uiWorld()..initialize();
+      final scope = scopeOver(world);
+      oldScreen(world, 'Hud');
+      final list = File(file('assets/ui/screens.json'))
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync('{"screens": [');
+
+      expect(module.moveScreensOut(scope), isEmpty);
+
+      expect(list.readAsStringSync(), '{"screens": [');
+      expect(File(file('assets/ui/hud.ui.json')).existsSync(), isFalse);
+      expect(UiLevelScreens.of(world), hasLength(1), reason: 'still there');
+      expect(scope.history.canUndo.value, isFalse);
+    });
+  });
+
+  group('play-tests', () {
+    Future<void> until(bool Function() done) async {
+      for (var i = 0; i < 300 && !done(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    }
+
+    void writeHud({required bool startOpen}) {
+      Directory(file('assets/ui')).createSync(recursive: true);
+      final world = _uiWorld()..initialize();
+      final hud = world.createEntityWithComponents([
+        UiCanvasComponent(),
+      ], name: 'Hud');
+      File(
+        file('assets/ui/hud.ui.json'),
+      ).writeAsStringSync(jsonEncode(UiDocument.capture(hud, world).toJson()));
+      File(file('assets/ui/screens.json')).writeAsStringSync(
+        jsonEncode({
+          'screens': [
+            {'path': 'assets/ui/hud.ui.json', 'startOpen': startOpen},
+          ],
+        }),
+      );
+    }
+
+    test('the next one reads what changed on disk since the last', () async {
+      writeHud(startOpen: true);
+      final engine = Engine();
+      addTearDown(engine.dispose);
+      await engine.initialize();
+      final scope = EditorScope(engine: engine, modules: [module]);
+      addTearDown(scope.dispose);
+      final layers = engine.layers;
+
+      module.onPlayStateChanged(true);
+      await until(() => layers.isEnabled(UiScreensLayer.layerId));
+      final installed = JustGameUi.of(engine)!;
+      expect(installed.screens.isOpen('Hud'), isTrue);
+      module.onPlayStateChanged(false);
+      await Future<void>.delayed(Duration.zero);
+
+      // Changed while no play-test runs — say, its ▶ unticked in Screens.
+      writeHud(startOpen: false);
+      module.onPlayStateChanged(true);
+      await until(() => layers.isEnabled(UiScreensLayer.layerId));
+
+      expect(installed.screens.isOpen('Hud'), isFalse);
+    });
+
+    test('stopped before the files were read, nothing shows', () async {
+      writeHud(startOpen: true);
+      final engine = Engine();
+      addTearDown(engine.dispose);
+      await engine.initialize();
+      final scope = EditorScope(engine: engine, modules: [module]);
+      addTearDown(scope.dispose);
+
+      module
+        ..onPlayStateChanged(true)
+        ..onPlayStateChanged(false);
+      await until(() => JustGameUi.of(engine) != null);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(JustGameUi.of(engine), isNotNull);
+      expect(engine.layers.isEnabled(UiScreensLayer.layerId), isFalse);
+    });
+  });
+
+  group('what it lends the interface', () {
+    test('the level\'s text is drawn in the game\'s theme', () async {
+      const path = 'assets/ui/default.uitheme.json';
+      void writeTheme(double radius) => File(file(path))
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync(
+          jsonEncode(
+            UiTheme.fallback.copyWith(name: 'game', radius: radius).toJson(),
+          ),
+        );
+      writeTheme(4);
+      File(
+        file(UiScreenManifest.defaultPath),
+      ).writeAsStringSync(jsonEncode({'theme': path, 'screens': <Object>[]}));
+      final engine = Engine();
+      addTearDown(engine.dispose);
+      await engine.initialize();
+      final scope = EditorScope(engine: engine, modules: [module]);
+      addTearDown(scope.dispose);
+      final style = UiWorldStyle.of(engine.context);
+      Future<void> until(bool Function() done) async {
+        for (var i = 0; i < 300 && !done(); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+      }
+
+      await until(() => style.theme != null);
+      expect(style.theme?.name, 'game');
+
+      // Saved again from the Theme tab: the level follows.
+      writeTheme(9);
+      module.onAssetChanged(path);
+      await until(() => style.theme?.radius == 9);
+      expect(style.theme?.radius, 9);
+    });
+
+    test('let go, themes are read from the bundle again', () async {
+      const path = 'assets/ui/only_on_disk.uitheme.json';
+      File(file(path))
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync(
+          jsonEncode(UiTheme.fallback.copyWith(name: 'disk').toJson()),
+        );
+      final scope = EditorScope(
+        world: _uiWorld()..initialize(),
+        modules: [module],
+      );
+      expect((await UiThemes.load(path)).name, 'disk');
+
+      scope.dispose();
+      UiThemes.evict(path);
+
+      expect(
+        (await UiThemes.load(path)).name,
+        isNot('disk'),
+        reason: 'the bundle has no such theme: the fallback',
+      );
+    });
+
+    test('a font changing keeps every other font', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final bytes = (await rootBundle.load(
+        'fonts/MaterialIcons-Regular.otf',
+      )).buffer.asUint8List();
+      for (final name in const ['Alpha-Regular.otf', 'Beta-Regular.otf']) {
+        File(file('assets/fonts/$name'))
+          ..parent.createSync(recursive: true)
+          ..writeAsBytesSync(bytes);
+      }
+      UiFonts.reset();
+      addTearDown(() {
+        UiFonts.reset();
+        UiFonts.read = rootBundle.load;
+      });
+      scopeOver(_uiWorld()..initialize());
+      Future<void> settle() async {
+        for (var i = 0; i < 300 && UiFonts.families.length < 2; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+      }
+
+      await settle();
+      expect(UiFonts.families, ['Alpha', 'Beta']);
+
+      module.onAssetChanged('assets/fonts/Beta-Regular.otf');
+      await settle();
+
+      expect(UiFonts.families, ['Alpha', 'Beta']);
     });
   });
 }

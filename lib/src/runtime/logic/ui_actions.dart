@@ -158,7 +158,8 @@ class UiActionHost {
   final void Function()? quit;
   final void Function(String path)? playSound;
 
-  /// Shows, hides or flips a UI entity by name; null shows, false hides.
+  /// Shows, hides or flips a UI entity by name: true shows, false hides,
+  /// null flips.
   final void Function(String entityName, bool? visible)? showUi;
 
   final void Function(String entityName)? pushScreen;
@@ -225,6 +226,18 @@ abstract final class UiActions {
     'audio.play': 'A sound to play',
   };
 
+  /// What a text's `[link=…]` runs when it is tapped: `[link=shop]` is the
+  /// game's `custom:shop`, and a built-in may be named with its argument —
+  /// `[link=ui.push Credits]`.
+  static UiAction linkAction(String link) {
+    final value = link.trim();
+    final space = value.indexOf(' ');
+    final kind = space < 0 ? value : value.substring(0, space);
+    final argument = space < 0 ? '' : value.substring(space + 1).trim();
+    final known = builtIns.containsKey(kind) || kind.startsWith('custom:');
+    return UiAction(known ? kind : 'custom:$kind', argument);
+  }
+
   /// Does [action]. An action nobody can carry out is quietly nothing —
   /// a button with a missing handler must not take the game down. The
   /// editor's Problems dock is where that is reported instead.
@@ -282,15 +295,51 @@ abstract final class UiActions {
     }
   }
 
-  /// The timeline player an action names — in the interface first, then
-  /// the game — or the acting entity's own.
+  /// The timeline player an action names — in the acting entity's own
+  /// screen first (two screens may each hold an entity by that name), then
+  /// anywhere in the interface, then the game — or the acting entity's own.
   static TimelinePlayerComponent? _timelineOf(UiActionContext context) {
-    if (context.argument.isEmpty) {
-      return context.entity?.getComponent<TimelinePlayerComponent>();
+    final name = context.argument;
+    final acting = context.entity;
+    if (name.isEmpty) {
+      return acting?.getComponent<TimelinePlayerComponent>();
     }
     final named =
-        context.world.findEntityByName(context.argument) ??
-        context.gameWorld?.findEntityByName(context.argument);
+        (acting == null
+            ? null
+            : findBelow(context.world, rootOf(acting), name)) ??
+        context.world.findEntityByName(name) ??
+        context.gameWorld?.findEntityByName(name);
     return named?.getComponent<TimelinePlayerComponent>();
+  }
+
+  /// The top of [entity]'s hierarchy: a screen's canvas, a level's root.
+  static Entity rootOf(Entity entity) {
+    final world = entity.world;
+    var current = entity;
+    // A tree deeper than this is a mistake, not a use case.
+    for (var step = 0; step < 64 && world != null; step++) {
+      final parentId = current.getComponent<ParentComponent>()?.parentId;
+      final parent = parentId == null ? null : world.getEntity(parentId);
+      if (parent == null) break;
+      current = parent;
+    }
+    return current;
+  }
+
+  /// The first entity called [name] at or below [root], nearest first.
+  static Entity? findBelow(World world, Entity root, String name) {
+    final queue = [root];
+    final seen = <Entity>{root};
+    for (var i = 0; i < queue.length; i++) {
+      final entity = queue[i];
+      if (entity.name == name) return entity;
+      final children = entity.getComponent<ChildrenComponent>()?.childIds;
+      for (final id in children ?? const <EntityId>[]) {
+        final child = world.getEntity(id);
+        if (child != null && seen.add(child)) queue.add(child);
+      }
+    }
+    return null;
   }
 }

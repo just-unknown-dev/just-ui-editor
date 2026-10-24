@@ -1,6 +1,8 @@
 /// One theme open in the interface editor's Theme tab.
 library;
 
+import 'dart:async';
+
 import 'package:just_editor_core/just_editor_core.dart';
 import 'package:just_signals/just_signals.dart';
 
@@ -59,7 +61,14 @@ class UiThemeDocument {
     history.markSaved();
   }
 
+  /// Lets the theme go. Edits it was showing unsaved go with it: every
+  /// screen, the level's text and the next play-test read the file again,
+  /// not what was dropped.
   void dispose() {
+    if (dirty.value) {
+      UiThemes.evict(path);
+      unawaited(UiThemes.load(path));
+    }
     history.dispose();
     theme.dispose();
   }

@@ -19,6 +19,7 @@ class UiScreensPanel extends StatelessWidget {
     required this.session,
     required this.onOpen,
     required this.onNew,
+    this.onDuplicate,
   });
 
   final UiEditorSession session;
@@ -29,14 +30,24 @@ class UiScreensPanel extends StatelessWidget {
   /// Makes a new screen: a menu (`isScreen`) or a layer that stays (a HUD).
   final void Function({required bool isScreen}) onNew;
 
+  /// Copies a screen and opens the copy — asking about unsaved work first;
+  /// the copy is only made when null.
+  final void Function(String path)? onDuplicate;
+
   @override
   Widget build(BuildContext context) {
     return SignalConsumer(
-      signals: [session.files, session.manifest, session.document],
+      signals: [
+        session.files,
+        session.manifest,
+        session.manifestProblem,
+        session.document,
+      ],
       builder: (context, _) {
         final files = session.files.value;
         final list = session.manifest.value;
         final open = session.document.value;
+        final problem = session.manifestProblem.value;
         // As tall as its rows, up to what the column allows.
         return Column(
           mainAxisSize: MainAxisSize.min,
@@ -55,6 +66,7 @@ class UiScreensPanel extends StatelessWidget {
                 ),
               ],
             ),
+            if (problem != null) _ListProblem(problem: problem),
             Flexible(
               child: files.isEmpty
                   ? EditorEmptyState(
@@ -76,6 +88,7 @@ class UiScreensPanel extends StatelessWidget {
                             open: open?.path == path ? open : null,
                             session: session,
                             onOpen: () => onOpen(path),
+                            onDuplicate: onDuplicate,
                           ),
                       ],
                     ),
@@ -107,6 +120,44 @@ class UiScreensPanel extends StatelessWidget {
   }
 }
 
+/// The screen list does not read: what is wrong, and that nothing will be
+/// written to it until it is mended.
+class _ListProblem extends StatelessWidget {
+  const _ListProblem({required this.problem});
+
+  final String problem;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: problem,
+    waitDuration: EditorMetrics.tooltipWait,
+    child: Container(
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+      color: EditorTheme.error.withValues(alpha: 0.12),
+      child: Row(
+        children: [
+          Icon(
+            Icons.error_outline,
+            size: EditorMetrics.iconMd,
+            color: EditorTheme.error,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '${UiScreenManifest.defaultPath} does not read, so it is left '
+              'alone. Mend it by hand.',
+              style: TextStyle(
+                color: EditorTheme.textPrimary,
+                fontSize: EditorMetrics.fontLabel,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class _ScreenRow extends StatelessWidget {
   const _ScreenRow({
     required this.path,
@@ -114,6 +165,7 @@ class _ScreenRow extends StatelessWidget {
     required this.open,
     required this.session,
     required this.onOpen,
+    this.onDuplicate,
   });
 
   final String path;
@@ -121,6 +173,7 @@ class _ScreenRow extends StatelessWidget {
   final UiScreenDocument? open;
   final UiEditorSession session;
   final VoidCallback onOpen;
+  final void Function(String path)? onDuplicate;
 
   String get _label => path.split('/').last.replaceAll('.ui.json', '');
 
@@ -182,14 +235,17 @@ class _ScreenRow extends StatelessWidget {
                     : 'Waits to be opened — click to show from the first frame',
                 isActive: entry!.startOpen,
                 iconSize: 13,
-                onTap: () => session.setStartOpen(path, !entry!.startOpen),
+                onTap: () => _report(
+                  context,
+                  session.setStartOpen(path, !entry!.startOpen),
+                ),
               )
             else
               EditorIconButton(
                 icon: Icons.playlist_add_rounded,
                 tooltip: 'Not in the game — add it to the list',
                 iconSize: 13,
-                onTap: () => session.setListed(path, true),
+                onTap: () => _report(context, session.setListed(path, true)),
               ),
           ],
         ),
@@ -199,6 +255,25 @@ class _ScreenRow extends StatelessWidget {
       message: listed ? path : '$path — not in the game\'s list',
       waitDuration: EditorMetrics.tooltipWait,
       child: row,
+    );
+  }
+
+  /// Says what [session] could not do, when [done] is false.
+  Future<void> _report(BuildContext context, bool done) async {
+    if (done || !context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => EditorAlert(
+        title: 'Not done',
+        message: session.lastError ?? 'Something went wrong.',
+        actions: [
+          EditorButton(
+            label: 'OK',
+            kind: EditorButtonKind.primary,
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
     );
   }
 
@@ -236,12 +311,14 @@ class _ScreenRow extends StatelessWidget {
           open?.name ?? session.nameOf(path) ?? _label,
         );
         if (name == null || !context.mounted) break;
-        if (!session.renameScreen(path, name)) {
+        // Nothing to do for the name it has already.
+        if (name == (open?.name ?? session.nameOf(path))) break;
+        if (!session.renameScreen(path, name) && context.mounted) {
           await showDialog<void>(
             context: context,
             builder: (context) => EditorAlert(
-              title: 'That name is taken',
-              message: 'Another screen is already called $name.',
+              title: 'Not renamed',
+              message: session.lastError ?? 'It could not be renamed.',
               actions: [
                 EditorButton(
                   label: 'OK',
@@ -253,9 +330,13 @@ class _ScreenRow extends StatelessWidget {
           );
         }
       case 'duplicate':
-        session.duplicateScreen(path);
+        if (onDuplicate case final duplicate?) {
+          duplicate(path);
+        } else {
+          await _report(context, session.duplicateScreen(path) != null);
+        }
       case 'list':
-        session.setListed(path, !listed);
+        await _report(context, session.setListed(path, !listed));
       case 'delete':
         final sure = await showEditorConfirm(
           context,
@@ -263,7 +344,9 @@ class _ScreenRow extends StatelessWidget {
           message: 'Its file is deleted and it leaves the game\'s list.',
           confirmLabel: 'Delete',
         );
-        if (sure == true) session.deleteScreen(path);
+        if (sure == true && context.mounted) {
+          await _report(context, session.deleteScreen(path));
+        }
     }
   }
 }
@@ -273,33 +356,58 @@ Future<String?> promptForName(
   BuildContext context,
   String title,
   String initial,
-) {
-  final controller = TextEditingController(text: initial);
-  return showDialog<String>(
-    context: context,
-    builder: (context) => EditorAlert(
-      title: title,
-      content: TextField(
-        controller: controller,
-        autofocus: true,
-        style: TextStyle(color: EditorTheme.textPrimary, fontSize: 12),
-        decoration: editorFieldDecoration(hint: 'Name'),
-        onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
-      ),
-      actions: [
-        EditorButton(
-          label: 'Cancel',
-          kind: EditorButtonKind.ghost,
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        EditorButton(
-          label: 'OK',
-          kind: EditorButtonKind.primary,
-          onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-        ),
-      ],
+) => showDialog<String>(
+  context: context,
+  builder: (context) => _NamePrompt(title: title, initial: initial),
+);
+
+/// The box [promptForName] shows. It owns its text: let go of when the
+/// dialog is gone — after its closing animation — not when the answer is,
+/// which left the closing dialog drawing a field whose text was disposed.
+class _NamePrompt extends StatefulWidget {
+  const _NamePrompt({required this.title, required this.initial});
+
+  final String title;
+  final String initial;
+
+  @override
+  State<_NamePrompt> createState() => _NamePromptState();
+}
+
+class _NamePromptState extends State<_NamePrompt> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => EditorAlert(
+    title: widget.title,
+    content: TextField(
+      controller: _controller,
+      autofocus: true,
+      style: TextStyle(color: EditorTheme.textPrimary, fontSize: 12),
+      decoration: editorFieldDecoration(hint: 'Name'),
+      onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
     ),
-  ).whenComplete(controller.dispose);
+    actions: [
+      EditorButton(
+        label: 'Cancel',
+        kind: EditorButtonKind.ghost,
+        onPressed: () => Navigator.of(context).pop(),
+      ),
+      EditorButton(
+        label: 'OK',
+        kind: EditorButtonKind.primary,
+        onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+      ),
+    ],
+  );
 }
 
 /// A small caption over a panel, with buttons at its right.

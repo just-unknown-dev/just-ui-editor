@@ -57,6 +57,8 @@ abstract final class UiLevelScreens {
   ///
   /// A screen whose name another screen already has takes a free one, and
   /// says so in [UiMovedScreen.was]. Empty when there was nothing to move.
+  /// Throws a [FormatException], having written nothing, while the game's
+  /// screen list does not read.
   static List<UiMovedScreen> moveOut({
     required World world,
     required EditorSceneState sceneState,
@@ -67,6 +69,14 @@ abstract final class UiLevelScreens {
   }) {
     final canvases = of(world);
     if (canvases.isEmpty) return const [];
+    // Before anything is written: a list that does not read cannot take
+    // the screens, and written over it would lose every one it names.
+    if (project.manifestProblem() case final problem?) {
+      throw FormatException(
+        '${UiScreenManifest.defaultPath} does not read ($problem). Mend '
+        'it by hand first.',
+      );
+    }
 
     final subtree = <Entity>[];
     void collect(Entity e) {

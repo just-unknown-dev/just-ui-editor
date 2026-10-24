@@ -244,10 +244,14 @@ class UiActionsEditorRow extends StatelessWidget {
   /// What the game has registered, offered beside the built-ins.
   final List<String> customNames;
 
-  List<String> get _kinds => [
+  /// The kinds offered: the built-ins, what the game registered, and any a
+  /// saved action names that neither knows — kept, and shown, so a game's
+  /// `custom:` action reads as itself while the game is not running.
+  List<String> get _kinds => {
     ...ui.UiActions.builtIns.keys,
     for (final name in customNames) 'custom:$name',
-  ];
+    for (final action in actions.actions) action.kind,
+  }.toList();
 
   void _replace(int index, ui.UiAction action) => onChanged(
     ui.UiActionList([

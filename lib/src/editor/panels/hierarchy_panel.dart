@@ -37,11 +37,34 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
 
   UiEditorSession get session => widget.session;
 
+  /// The screen the rows below were made for. Each screen's world counts
+  /// its ids from nought, so what is folded, renamed or keyed by id in one
+  /// means nothing in the next.
+  UiScreenDocument? _shownFor;
+
+  /// The tree as last built: kept while a drag on the canvas lasts, which
+  /// changes where things are on every move and nothing the tree shows.
+  Widget? _shown;
+
+  void _forget() {
+    _shut.clear();
+    _rowKeys.clear();
+    _renaming = null;
+    _renameError = null;
+    _lastClicked = null;
+    _dropAt = null;
+    _shown = null;
+  }
+
   @override
   Widget build(BuildContext context) {
     return SignalBuilder<UiScreenDocument?>(
       signal: session.document,
       builder: (context, doc, _) {
+        if (!identical(doc, _shownFor)) {
+          _shownFor = doc;
+          _forget();
+        }
         if (doc == null) return const SizedBox.shrink();
         return SignalConsumer(
           signals: [
@@ -49,8 +72,13 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
             doc.sceneState.selectedEntity,
             doc.sceneState.multiSelectedIds,
             doc.history.revision,
+            session.dragging,
           ],
-          builder: (context, _) => _tree(doc),
+          builder: (context, _) {
+            final shown = _shown;
+            if (session.dragging.value && shown != null) return shown;
+            return _shown = _tree(doc);
+          },
         );
       },
     );
@@ -237,6 +265,8 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
       return;
     }
     final ok = session.rename(entity, name);
+    final doc = session.document.value;
+    final isCanvas = doc != null && entity.id == doc.canvas.id;
     setState(() {
       if (ok) {
         _renaming = null;
@@ -244,7 +274,10 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
       } else {
         _renameError = name.trim().isEmpty
             ? 'A name is needed'
-            : 'Something else is called that';
+            // The canvas is the screen: the session says what stood in its
+            // way — another screen's name, a file, one of its elements.
+            : (isCanvas ? session.lastError : null) ??
+                  'Something else is called that';
       }
     });
   }
@@ -293,11 +326,11 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
           'delete',
           'Delete',
           icon: Icons.delete_outline,
-          shortcut: 'Del',
+          shortcut: EditorKeys.isMac ? 'Delete' : 'Del',
         ),
       ],
-      if (slot != null) ...[
-        editorMenuDivider(),
+      if (slot != null || !isCanvas) editorMenuDivider(),
+      if (slot != null)
         editorMenuItem(
           'visible',
           slot.visible ? 'Hide' : 'Show',
@@ -305,7 +338,16 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
               ? Icons.visibility_off_outlined
               : Icons.visibility_outlined,
         ),
-      ],
+      // Saved, unlike Hide's sibling the eye: off, it is not in the game
+      // until something switches it on.
+      if (!isCanvas)
+        editorMenuItem(
+          'enabled',
+          entity.isActive ? 'Switch off' : 'Switch on',
+          icon: entity.isActive
+              ? Icons.toggle_off_outlined
+              : Icons.toggle_on_outlined,
+        ),
     ]);
     if (chosen == null || !mounted) return;
     switch (chosen) {
@@ -323,6 +365,8 @@ class UiHierarchyPanelState extends State<UiHierarchyPanel> {
         session.deleteSelection();
       case 'visible':
         if (slot != null) session.setVisible(entity, !slot.visible);
+      case 'enabled':
+        session.setEnabled(entity, !entity.isActive);
     }
   }
 

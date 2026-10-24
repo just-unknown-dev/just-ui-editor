@@ -116,14 +116,19 @@ void main() {
   /// The menu on screen, a service with a pad, and the bridge between.
   Future<(InputService, FakeGamepadSource, GlobalKey<UiLayerState>)> show(
     WidgetTester tester,
-    World world,
-  ) async {
+    World world, {
+    bool Function(UiLayerState ui)? takesPad,
+  }) async {
     final input = InputService()..loadAsset(_asset);
     final pads = FakeGamepadSource();
     await input.attachGamepads(pads);
     pads.connect('p');
     final key = GlobalKey<UiLayerState>();
-    final bridge = UiInputBridge(input: input, layer: () => key.currentState);
+    final bridge = UiInputBridge(
+      input: input,
+      layer: () => key.currentState,
+      takesPad: takesPad,
+    );
     addTearDown(() {
       bridge.dispose();
       input.dispose();
@@ -223,6 +228,52 @@ void main() {
     input.update(1);
     await tester.pump();
     expect(key.currentState!.navigator.isEmpty, isTrue);
+  });
+
+  testWidgets('a focused slider slides with the d-pad', (tester) async {
+    final world = _uiWorld();
+    final root = world.createEntityWithComponents([
+      UiCanvasComponent(
+        designSize: const Size(400, 300),
+        safeArea: false,
+        isScreen: true,
+        initialFocus: 'Volume',
+      ),
+      ChildrenComponent(),
+    ], name: 'Settings');
+    final slider = UiSliderComponent(value: 0.5, steps: 10);
+    final entity = world.createEntityWithComponents([
+      slider,
+      UiSlotComponent(
+        mode: UiSlotMode.anchored,
+        anchor: UiAnchor.center,
+        size: const Size(300, 48),
+      ),
+      ParentComponent(parentId: root.id),
+    ], name: 'Volume');
+    root.getComponent<ChildrenComponent>()!.addChild(entity.id);
+
+    final (input, pads, _) = await show(tester, world);
+    pads.press('p', _b['dpad/right']!);
+    input.update(1);
+    await tester.pump();
+
+    expect(slider.value, closeTo(0.6, 1e-9));
+  });
+
+  testWidgets('a screen that does not take the pad leaves it alone', (
+    tester,
+  ) async {
+    final (input, pads, _) = await show(
+      tester,
+      menu(['Play', 'Options', 'Quit']),
+      takesPad: (_) => false,
+    );
+    pads.press('p', _b['dpad/down']!);
+    input.update(1);
+    await tester.pump();
+
+    expect(focusedText(), 'Play');
   });
 
   testWidgets('while a rebind listens, the bridge stands aside', (

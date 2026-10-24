@@ -98,14 +98,8 @@ class UiBuildContext {
   );
 
   /// The words behind a string that may be a key, a binding, or both.
-  String resolve(String source) {
-    var text = source;
-    if (text.startsWith('@') && text.length > 1) {
-      final key = text.substring(1);
-      text = localise?.call(key) ?? key;
-    }
-    return UiBindings.interpolate(text, self: entity);
-  }
+  String resolve(String source) =>
+      UiBindings.resolveText(source, self: entity, localise: localise);
 }
 
 /// How an entity becomes a widget.
@@ -184,13 +178,23 @@ abstract final class UiWidgets {
         world: context.world,
         theme: context.theme,
         children: context.children,
-        props: {
-          for (final prop in definition.props)
-            prop.name: custom.props[prop.name] ?? prop.defaultValue,
-          ...custom.props,
-        },
+        props: propsOf(custom),
         localise: context.localise,
+        gameWorld: context.gameWorld,
+        host: context.host,
       ),
     );
+  }
+
+  /// What [custom] tells its widget: every property the widget declares,
+  /// with its default where the scene says nothing, and whatever else the
+  /// scene set.
+  static Map<String, String> propsOf(UiCustomComponent custom) {
+    final definition = _widgets[custom.widgetId];
+    return {
+      for (final prop in definition?.props ?? const <UiWidgetProp>[])
+        prop.name: custom.props[prop.name] ?? prop.defaultValue,
+      ...custom.props,
+    };
   }
 }

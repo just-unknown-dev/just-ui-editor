@@ -18,6 +18,7 @@ export 'src/runtime/text/ui_fonts.dart';
 
 // Themes.
 export 'src/runtime/theme/ui_theme.dart';
+export 'src/runtime/theme/ui_world_style.dart';
 
 // What the interface reads from the game and does to it.
 export 'src/runtime/logic/ui_bindings.dart';
