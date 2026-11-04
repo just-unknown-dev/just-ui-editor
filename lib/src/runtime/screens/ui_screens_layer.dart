@@ -34,7 +34,7 @@ class UiScreensPlugin extends EnginePlugin {
   }
 
   @override
-  void update(double dt) => screens.update(dt);
+  void update(double deltaTime) => screens.update(deltaTime);
 
   @override
   void detach() {
@@ -180,7 +180,7 @@ class _UiScreensView extends GameLayerController {
       system.pointer = UiPointer(isDown: _down);
       return;
     }
-    final camera = engine.cameraSystem.mainCamera;
+    final camera = engine.camera.mainCamera;
     system.pointer = UiPointer(
       position: camera.screenToWorld(at),
       isDown: _down,

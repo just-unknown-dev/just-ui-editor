@@ -1,4 +1,4 @@
-/// How world-space text and buttons are saved: the schemas for
+/// How world-space text and buttons are saved: the definitions for
 /// [TextComponent] and [ButtonComponent], with the same type names and ids
 /// the engine used to register, so a scene saved before the move loads
 /// unchanged.
@@ -16,10 +16,10 @@ import '../logic/ui_actions.dart';
 import '../text/ui_text_style.dart';
 import 'ui_field_types.dart';
 
-abstract final class UiSchemas {
+abstract final class UiWorldDefinitions {
   /// [TextComponent]: text in the world, and everything about how it looks.
-  static ComponentSchema<TextComponent>
-  get text => ComponentSchema<TextComponent>(
+  static ComponentDefinition<TextComponent>
+  get text => ComponentDefinition<TextComponent>(
     type: 'TextComponent',
     hints: const ComponentHints(
       name: 'Text',
@@ -97,13 +97,13 @@ abstract final class UiSchemas {
     create: () => TextComponent(text: 'Text'),
     extent: const _UiExtent(),
     fields: [
-      SchemaField(
+      FieldDefinition(
         name: 'textValue',
         kind: UiFieldTypes.uiText,
         read: (c) => (c as TextComponent).text,
         write: (c, v) => (c as TextComponent).text = v as String? ?? '',
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'style',
         kind: UiFieldTypes.uiTextStyle,
         read: (c) => (c as TextComponent).style,
@@ -111,14 +111,14 @@ abstract final class UiSchemas {
             ? v
             : const UiTextStyle(),
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'styleRole',
         kind: UiFieldTypes.uiStyleRole,
         read: (c) => (c as TextComponent).styleRole,
         write: (c, v) =>
             (c as TextComponent).styleRole = v as String? ?? 'body',
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'w',
         kind: FieldTypes.decimal,
         read: (c) => (c as TextComponent).size.width,
@@ -128,7 +128,7 @@ abstract final class UiSchemas {
         },
         min: 0.0,
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'h',
         kind: FieldTypes.decimal,
         read: (c) => (c as TextComponent).size.height,
@@ -138,7 +138,7 @@ abstract final class UiSchemas {
         },
         min: 0.0,
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'align',
         kind: const EnumFieldType(
           UiTextAlign.values,
@@ -148,7 +148,7 @@ abstract final class UiSchemas {
         read: (c) => (c as TextComponent).align,
         write: (c, v) => (c as TextComponent).align = v as UiTextAlign,
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'overflow',
         kind: const EnumFieldType(
           UiTextOverflow.values,
@@ -158,20 +158,20 @@ abstract final class UiSchemas {
         read: (c) => (c as TextComponent).overflow,
         write: (c, v) => (c as TextComponent).overflow = v as UiTextOverflow,
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'wrap',
         kind: FieldTypes.boolean,
         read: (c) => (c as TextComponent).wrap,
         write: (c, v) => (c as TextComponent).wrap = v as bool? ?? false,
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'maxLines',
         kind: FieldTypes.integer,
         read: (c) => (c as TextComponent).maxLines,
         write: (c, v) => (c as TextComponent).maxLines = (v as num?)?.toInt(),
         min: 0,
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'revealSpeed',
         kind: FieldTypes.decimal,
         read: (c) => (c as TextComponent).revealSpeed,
@@ -184,7 +184,7 @@ abstract final class UiSchemas {
   );
 
   /// The draw (and, for a button, press) order among text and buttons.
-  static SchemaField _layer() => SchemaField(
+  static FieldDefinition _layer() => FieldDefinition(
     name: 'layer',
     kind: FieldTypes.integer,
     read: (c) => (c as UIComponent).layer,
@@ -192,8 +192,8 @@ abstract final class UiSchemas {
   );
 
   /// [ButtonComponent]: a button in the world, and what pressing it does.
-  static ComponentSchema<ButtonComponent> get button =>
-      ComponentSchema<ButtonComponent>(
+  static ComponentDefinition<ButtonComponent> get button =>
+      ComponentDefinition<ButtonComponent>(
         type: 'ButtonComponent',
         hints: const ComponentHints(
           name: 'Button',
@@ -265,53 +265,53 @@ abstract final class UiSchemas {
         create: () => ButtonComponent(),
         extent: const _UiExtent(),
         fields: [
-          SchemaField(
+          FieldDefinition(
             name: 'label',
             kind: UiFieldTypes.uiText,
             read: (c) => (c as ButtonComponent).label,
             write: (c, v) => (c as ButtonComponent).label = v as String? ?? '',
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'labelStyle',
             kind: UiFieldTypes.uiTextStyle,
             read: (c) => (c as ButtonComponent).labelStyle,
             write: (c, v) => (c as ButtonComponent).labelStyle =
                 v is UiTextStyle ? v : const UiTextStyle(),
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'styleRole',
             kind: UiFieldTypes.uiStyleRole,
             read: (c) => (c as ButtonComponent).styleRole,
             write: (c, v) =>
                 (c as ButtonComponent).styleRole = v as String? ?? 'button',
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'onPressed',
             kind: UiFieldTypes.uiActions,
             read: (c) => (c as ButtonComponent).onPressed,
             write: (c, v) => (c as ButtonComponent).onPressed =
                 v is UiActionList ? v : UiActionList.empty,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'colorRole',
             kind: UiFieldTypes.uiColorRole,
             read: (c) => (c as ButtonComponent).colorRole,
             write: (c, v) =>
                 (c as ButtonComponent).colorRole = v as String? ?? 'primary',
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'color',
             kind: FieldTypes.color,
             read: (c) => (c as ButtonComponent).color,
             write: (c, v) => (c as ButtonComponent).color = v as Color?,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'borderColor',
             kind: FieldTypes.color,
             read: (c) => (c as ButtonComponent).borderColor,
             write: (c, v) => (c as ButtonComponent).borderColor = v as Color?,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'borderRadius',
             kind: FieldTypes.decimal,
             read: (c) => (c as ButtonComponent).borderRadius,
@@ -319,7 +319,7 @@ abstract final class UiSchemas {
                 (v as num?)?.toDouble() ?? 8,
             min: 0,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'w',
             kind: FieldTypes.decimal,
             read: (c) => (c as ButtonComponent).size.width,
@@ -329,7 +329,7 @@ abstract final class UiSchemas {
             },
             min: 0.0,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'h',
             kind: FieldTypes.decimal,
             read: (c) => (c as ButtonComponent).size.height,
@@ -340,7 +340,7 @@ abstract final class UiSchemas {
             min: 0.0,
           ),
           _layer(),
-          SchemaField(
+          FieldDefinition(
             name: 'enabled',
             kind: FieldTypes.boolean,
             read: (c) => (c as ButtonComponent).enabled,
@@ -350,7 +350,7 @@ abstract final class UiSchemas {
         ],
       );
 
-  /// Every schema above.
+  /// Every definition above.
   static List<ComponentCodec> get all => [text, button];
 }
 

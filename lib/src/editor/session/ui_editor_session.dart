@@ -68,7 +68,9 @@ class UiEditorSession {
     this.onFilesChanged,
   }) : context = context ?? EngineContext(),
        _ownsContext = context == null {
-    this.context.install(JustGameUi.extension);
+    this.context
+      ..install(BuiltInComponents.extension)
+      ..install(JustGameUi.extension);
     this.codec = codec ?? SceneCodec(this.context.definitions);
     refreshFiles();
   }

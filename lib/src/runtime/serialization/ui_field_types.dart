@@ -1,7 +1,7 @@
 /// The field types the interface saves with — the same ids the engine used
 /// to carry, so saved scenes and screens read back unchanged.
 ///
-/// A schema field holds its type directly, so nothing needs registering:
+/// A field definition holds its type directly, so nothing needs registering:
 /// the editor finds each one's row by [FieldType.id].
 library;
 

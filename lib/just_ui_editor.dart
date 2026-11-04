@@ -46,7 +46,7 @@ export 'src/runtime/systems/register_ui_systems.dart';
 
 // How it is saved.
 export 'src/runtime/serialization/ui_definitions.dart';
-export 'src/runtime/serialization/ui_schemas.dart';
+export 'src/runtime/serialization/ui_world_definitions.dart';
 export 'src/runtime/serialization/ui_field_types.dart';
 
 // Plugging it into a game.

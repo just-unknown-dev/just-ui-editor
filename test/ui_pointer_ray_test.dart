@@ -29,7 +29,7 @@ void main() {
   tearDown(() => world.dispose());
 
   test('a ray finds a button at its own depth', () {
-    final camera = Camera(
+    final camera = OutputCamera(
       viewportSize: const Size(100, 100),
       z: -10,
       lens: const CameraLens.perspective(fieldOfView: math.pi / 2),

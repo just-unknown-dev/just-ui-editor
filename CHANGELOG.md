@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Requires just_game_engine ^2.0.0-dev.4.
+- A `UiEditorSession` with a context of its own installs the engine's built-in components (`BuiltInComponents.extension`).
+- **Breaking**: `UiSchemas` is `UiWorldDefinitions` (file `runtime/serialization/ui_world_definitions.dart`; was `ui_schemas.dart`): the definitions of the world-space `TextComponent` and `ButtonComponent`, beside `UiDefinitions` for the screen-space interface. The saved names and ids are unchanged.
+
 ## 0.1.0-alpha.1
 
 - **Builds on `just_editor_core`**, the editor's module contract, instead of depending on `just_game_engine_editor`: the module's code needs nothing else of the editor. The tests that drive a real editor take `just_game_engine_editor` as a dev dependency.

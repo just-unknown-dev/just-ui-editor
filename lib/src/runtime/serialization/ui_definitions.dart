@@ -19,13 +19,13 @@ abstract final class UiDefinitions {
 
   // ── Helpers, so a field of each kind is one line ────────────────────────
 
-  static SchemaField _d<T extends Component>(
+  static FieldDefinition _d<T extends Component>(
     String name,
     double Function(T c) read,
     void Function(T c, double v) write, {
     double? min,
     double? max,
-  }) => SchemaField(
+  }) => FieldDefinition(
     name: name,
     kind: FieldTypes.decimal,
     read: (c) => read(c as T),
@@ -34,12 +34,12 @@ abstract final class UiDefinitions {
     max: max,
   );
 
-  static SchemaField _i<T extends Component>(
+  static FieldDefinition _i<T extends Component>(
     String name,
     int Function(T c) read,
     void Function(T c, int v) write, {
     double? min,
-  }) => SchemaField(
+  }) => FieldDefinition(
     name: name,
     kind: FieldTypes.integer,
     read: (c) => read(c as T),
@@ -47,56 +47,56 @@ abstract final class UiDefinitions {
     min: min,
   );
 
-  static SchemaField _b<T extends Component>(
+  static FieldDefinition _b<T extends Component>(
     String name,
     bool Function(T c) read,
     void Function(T c, bool v) write,
-  ) => SchemaField(
+  ) => FieldDefinition(
     name: name,
     kind: FieldTypes.boolean,
     read: (c) => read(c as T),
     write: (c, v) => write(c as T, v as bool? ?? false),
   );
 
-  static SchemaField _s<T extends Component>(
+  static FieldDefinition _s<T extends Component>(
     String name,
     String Function(T c) read,
     void Function(T c, String v) write, {
     FieldType kind = FieldTypes.text,
-  }) => SchemaField(
+  }) => FieldDefinition(
     name: name,
     kind: kind,
     read: (c) => read(c as T),
     write: (c, v) => write(c as T, v as String? ?? ''),
   );
 
-  static SchemaField _color<T extends Component>(
+  static FieldDefinition _color<T extends Component>(
     String name,
     Color? Function(T c) read,
     void Function(T c, Color? v) write,
-  ) => SchemaField(
+  ) => FieldDefinition(
     name: name,
     kind: FieldTypes.color,
     read: (c) => read(c as T),
     write: (c, v) => write(c as T, v as Color?),
   );
 
-  static SchemaField _insets<T extends Component>(
+  static FieldDefinition _insets<T extends Component>(
     String name,
     EdgeInsets Function(T c) read,
     void Function(T c, EdgeInsets v) write,
-  ) => SchemaField(
+  ) => FieldDefinition(
     name: name,
     kind: FieldTypes.edgeInsets,
     read: (c) => read(c as T),
     write: (c, v) => write(c as T, v is EdgeInsets ? v : EdgeInsets.zero),
   );
 
-  static SchemaField _actions<T extends Component>(
+  static FieldDefinition _actions<T extends Component>(
     String name,
     UiActionList Function(T c) read,
     void Function(T c, UiActionList v) write,
-  ) => SchemaField(
+  ) => FieldDefinition(
     name: name,
     kind: UiFieldTypes.uiActions,
     read: (c) => read(c as T),
@@ -163,7 +163,7 @@ abstract final class UiDefinitions {
             (c, v) => c.designSize = Size(c.designSize.width, v),
             min: 1,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'scaleMode',
             kind: const EnumFieldType(
               UiScaleMode.values,
@@ -190,7 +190,7 @@ abstract final class UiDefinitions {
             (c, v) => c.isScreen = v,
           ),
           _b<UiCanvasComponent>('modal', (c) => c.modal, (c, v) => c.modal = v),
-          SchemaField(
+          FieldDefinition(
             name: 'transition',
             kind: const EnumFieldType(
               UiTransition.values,
@@ -272,7 +272,7 @@ abstract final class UiDefinitions {
     ),
     create: UiSlotComponent.new,
     fields: [
-      SchemaField(
+      FieldDefinition(
         name: 'mode',
         kind: const EnumFieldType(
           UiSlotMode.values,
@@ -282,7 +282,7 @@ abstract final class UiDefinitions {
         read: (c) => (c as UiSlotComponent).mode,
         write: (c, v) => (c as UiSlotComponent).mode = v as UiSlotMode,
       ),
-      SchemaField(
+      FieldDefinition(
         name: 'anchor',
         kind: UiFieldTypes.uiAnchor,
         read: (c) => (c as UiSlotComponent).anchor,
@@ -381,7 +381,7 @@ abstract final class UiDefinitions {
         ),
         create: UiLayoutComponent.new,
         fields: [
-          SchemaField(
+          FieldDefinition(
             name: 'kind',
             kind: const EnumFieldType(
               UiLayoutKind.values,
@@ -391,7 +391,7 @@ abstract final class UiDefinitions {
             read: (c) => (c as UiLayoutComponent).kind,
             write: (c, v) => (c as UiLayoutComponent).kind = v as UiLayoutKind,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'mainAxis',
             kind: const EnumFieldType(
               UiAlign.values,
@@ -401,7 +401,7 @@ abstract final class UiDefinitions {
             read: (c) => (c as UiLayoutComponent).mainAxis,
             write: (c, v) => (c as UiLayoutComponent).mainAxis = v as UiAlign,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'crossAxis',
             kind: const EnumFieldType(
               UiAlign.values,
@@ -495,7 +495,7 @@ abstract final class UiDefinitions {
             (c) => c.color,
             (c, v) => c.color = v,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'gradient',
             kind: FieldTypes.list,
             read: (c) => [
@@ -596,7 +596,7 @@ abstract final class UiDefinitions {
             (c) => c.atlasRegion,
             (c, v) => c.atlasRegion = v,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'fit',
             kind: const EnumFieldType(
               BoxFit.values,
@@ -874,7 +874,7 @@ abstract final class UiDefinitions {
             (c) => c.value,
             (c, v) => c.value = v,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'options',
             kind: FieldTypes.list,
             read: (c) => (c as UiDropdownComponent).options,
@@ -925,7 +925,7 @@ abstract final class UiDefinitions {
             (c) => c.widgetId,
             (c, v) => c.widgetId = v,
           ),
-          SchemaField(
+          FieldDefinition(
             name: 'props',
             kind: FieldTypes.map,
             read: (c) => (c as UiCustomComponent).props,

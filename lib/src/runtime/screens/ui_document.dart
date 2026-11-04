@@ -291,12 +291,21 @@ class UiDocument {
       for (final item in json)
         if (item is Map)
           registry.decode(item.cast<String, dynamic>()) ??
-              (throw UnknownComponentTypeException(
-                item['type'] as String? ?? '(no type)',
-                entityName: name,
-              )),
+              (throw _unknown(registry, item['type'] as String?, name)),
     ];
   }
+
+  /// The failure to read a component saved as [type] on [entity], with
+  /// [registry]'s hint for the type, if it has one.
+  static UnknownComponentTypeException _unknown(
+    ComponentDefinitionRegistry registry,
+    String? type,
+    String? entity,
+  ) => UnknownComponentTypeException(
+    type ?? '(no type)',
+    entityName: entity,
+    hint: type == null ? null : registry.unknownTypeHint(type),
+  );
 
   /// The canvas component of the screen's root record, decoded — for
   /// reading its settings (design size, theme) without building anything.

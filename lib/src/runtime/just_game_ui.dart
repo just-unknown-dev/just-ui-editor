@@ -10,7 +10,7 @@ import 'screens/ui_screen_manifest.dart';
 import 'screens/ui_screens.dart';
 import 'screens/ui_screens_layer.dart';
 import 'serialization/ui_definitions.dart';
-import 'serialization/ui_schemas.dart';
+import 'serialization/ui_world_definitions.dart';
 import 'systems/register_ui_systems.dart';
 import 'text/ui_fonts.dart';
 import 'theme/ui_world_style.dart';
@@ -128,7 +128,7 @@ final class _JustGameUiExtension implements RefreshableExtension {
   void install(EngineContext context) {
     context.definitions
       ..registerAll(UiDefinitions.all, ifAbsent: true)
-      ..registerAll(UiSchemas.all, ifAbsent: true);
+      ..registerAll(UiWorldDefinitions.all, ifAbsent: true);
   }
 
   /// After a hot reload, in an editor: the interface's components as the
@@ -137,6 +137,6 @@ final class _JustGameUiExtension implements RefreshableExtension {
   void refresh(EngineContext context) {
     context.definitions
       ..refresh(UiDefinitions.all)
-      ..refresh(UiSchemas.all);
+      ..refresh(UiWorldDefinitions.all);
   }
 }
