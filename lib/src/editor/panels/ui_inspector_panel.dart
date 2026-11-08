@@ -5,16 +5,18 @@ import 'package:flutter/material.dart';
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/just_editor_core.dart';
 import 'package:just_signals/just_signals.dart';
+import 'package:meta/meta.dart';
 
-import '../../runtime/components/screen/ui_slot_component.dart';
-import '../create/ui_create.dart';
+import '../../layout/layout.dart';
 import '../document/ui_screen_document.dart';
-import '../session/ui_edit_ops.dart';
+import '../session/ui_create.dart';
 import '../session/ui_editor_session.dart';
+import '../session/ui_editor_session_edits.dart';
 
 /// The selected element's components — every field an undo step in the
 /// screen's own history, never the level's. With nothing selected, the
 /// screen's own settings; with several, how to line them up.
+@internal
 class UiInspectorPanel extends StatefulWidget {
   const UiInspectorPanel({
     super.key,
@@ -143,12 +145,16 @@ class _UiInspectorPanelState extends State<UiInspectorPanel> {
         spacing: 2,
         children: [
           for (final (how, icon, tip) in const [
-            (UiAlign.left, Icons.align_horizontal_left, 'Left edges'),
-            (UiAlign.centerX, Icons.align_horizontal_center, 'Centres, across'),
-            (UiAlign.right, Icons.align_horizontal_right, 'Right edges'),
-            (UiAlign.top, Icons.align_vertical_top, 'Top edges'),
-            (UiAlign.centerY, Icons.align_vertical_center, 'Centres, down'),
-            (UiAlign.bottom, Icons.align_vertical_bottom, 'Bottom edges'),
+            (UiAlignEdge.left, Icons.align_horizontal_left, 'Left edges'),
+            (
+              UiAlignEdge.centerX,
+              Icons.align_horizontal_center,
+              'Centres, across',
+            ),
+            (UiAlignEdge.right, Icons.align_horizontal_right, 'Right edges'),
+            (UiAlignEdge.top, Icons.align_vertical_top, 'Top edges'),
+            (UiAlignEdge.centerY, Icons.align_vertical_center, 'Centres, down'),
+            (UiAlignEdge.bottom, Icons.align_vertical_bottom, 'Bottom edges'),
           ])
             EditorIconButton(
               icon: icon,

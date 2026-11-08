@@ -1,10 +1,84 @@
 # Changelog
 
-## Unreleased
+## 0.2.0-alpha.1
 
-- Requires just_game_engine ^2.0.0-dev.4.
+Each engine has an interface of its own, the layout is by feature, the names follow the engine's rules, and the screen list is never written over. Requires just_game_engine ^2.0.0, just_inputs ^0.2.0, just_editor_core ^0.1.0 and, for the tests, just_game_engine_editor ^0.1.0. Dart ^3.12.0.
+
+### Breaking
+
+- **Renamed, and saved under the new names** (old files are migrated as they load, see Changed):
+  - `TextComponent` → `UiTextComponent`, `ButtonComponent` → `UiButtonComponent` (saved types `'UiTextComponent'`, `'UiButtonComponent'`);
+  - `TextComponentPainter` → `UiTextComponentPainter`, `ButtonComponentPainter` → `UiButtonComponentPainter`.
+- **Renamed:**
+  - `UIComponent` → `UiElementComponent`;
+  - `UiSystem` → `UiTextSystem`;
+  - `UiSchemas` → `UiWorldDefinitions` (file `serialization/ui_world_definitions.dart`; was `ui_schemas.dart`): the definitions of the level's own text and buttons, with the same ids;
+  - `UiDefinitions` → `UiScreenDefinitions`, whose `all` is a `List<ComponentCodec>` as `UiWorldDefinitions.all` is;
+  - the runtime's `UiAlign` → `UiFlexAlign` (saved by value name, unchanged), and the editor's `UiAlign` → `UiAlignEdge`: the two libraries no longer export one name twice;
+  - `localise` → `localize` everywhere: `JustGameUi.install`, `UiScreens`, `UiScreensLayer`, `UiLayer`, `UiTextSystem`, `registerUiSystems`, `UiWorldStyle`, `UiBuildContext`, `UiBindings.resolveText`;
+  - the extension `UiEditOps` → `UiEditorSessionEdits`;
+  - `UiWidgets.of(id)` → `UiWidgets.of(context).byId(id)`.
+- **The registries are per engine** (`EngineContext.slot`), never process-wide: `UiBindings`, `UiActions`, `UiWidgets`, `UiIcons`, `UiThemes` and `UiFonts` are reached through `X.of(engine.context)`, as `UiWorldStyle` already was. `UiBindings.register('coins', …)` is `UiBindings.of(engine.context).register('coins', …)`, and `UiActions.host = …` is `UiActions.of(engine.context).host = …`. The static helpers stay static: `UiBindings.namesIn`, `format`, `hueAt`, `phase`; `UiActions.builtIns`, `linkAction`, `rootOf`, `findBelow`; `UiFonts.familyOf`, `familiesIn`, `defaultFolder`.
+- `UiTextComponent.resolve(bindings, {self, localize})` takes the engine's bindings.
+- The pointer's ray (`UiPointer.ray`, `UiPointerSystem.buttonAt(ray:)`) is just_dart 0.3.0's `Ray3D` (was `Ray3`), through the engine.
+- `UiRichText.toTextSpan` and `UiTextPainter.set` take `icons:` (the engine's `UiIcons`); with none, `[icon=…]` draws nothing.
+- `UiBindings.samples` is gone: a tool shows samples in the worlds it previews (`showSamples(world, …)`, `hideSamples(world)`), and a game on the same engine reads its own values.
+- `UiBindings.registerBuiltIns()` is gone: `self.name` and `self.id` are there from the start, and after `clear()`.
+- `UiThemes.loadFor` is gone (the screens read the themes their canvases name). `UiThemes.useFallback(theme, owner:)` and `releaseFallback(owner)` replace setting `fallback` from the screens.
+- `UiSystem.missingBindings(world)` is `UiChecks.missingBindings(world)`, in `editor.dart`.
+- `UiSceneExtractor` and `UiSceneExtraction` moved to `editor.dart`: only the editor uses them.
+- `UiProject.writeManifest` is `UiProject.updateManifest(change)`, which changes the list as it is on disk; `UiProject.readScreen` takes `hooks:`.
+- `UiDocument.migrations` is private; `UiDocument.fromJson` takes `hooks:`.
+- `UiFieldEditors.all`, `UiExtras.all` and `UiFieldEditors.inheritedColor` take the edited engine's context; `uiInheritedColor` takes `theme:`. These, the canvas internals, the panels, the inspector rows and `UiSlotState` / `UiSlotEditCommand` are `@internal`; the inspector rows follow the editor core's names (`UiTextStyleFieldRow`, `UiActionsFieldRow`, `UiAnchorFieldRow`, `UiTextFieldRow`).
+- `UiCreateOptions.all(widgets)` and `byId(widgets, id)`, `UiCreate.baseNameFor(kind, widgets)` take the engine's widgets.
+- `UiThemeDocument` takes `themes:`.
+- The editor's `promptForName` is gone: the editor core's `showEditorPrompt`.
+- Files moved: `lib/src/` is laid out by feature (`text`, `bindings`, `theme`, `layout`, `controls`, `world`, `serialization`, `screens`, `editor`), each with one barrel; no game imports `src/`.
+
+### Added
+
+- `UiMigrations`: the renamed components (`renamedTypes`), installed into every context with `JustGameUi.extension`.
+- `UiDocument` format 2, and its step from format 1.
+- `UiTextComponent.resolved`, the text as last resolved, and `resolvedIn`, the world update (`World.updateCount`) in which the text system resolved it (run time, never saved).
+- `UiLayerState.walks` (`@visibleForTesting`): how often the layer has walked its tree.
+- `UiThemes.of`, `UiFonts.of`, `UiIcons.of`, `UiWidgets.of`, `UiActions.of`, `UiBindings.of`; `UiFonts.useBundle`.
+- `UiEditorSession.themeChanged(path)`, `showSamplesIn(world)`, `sampleValues`; `UiEditorWorkspace.onSession`.
+- `test/library_layout_test.dart`: the layout, the layers, the runtime/editor split, one name per library, and `just_store.json` against `pubspec.yaml`. `test/editor_dependencies_test.dart`: the editor core brings no native plugin the engine does not.
+- The release workflow formats, analyzes and tests before it packs.
+- **Closes on Back** (`UiCanvasComponent.closesOnBack`, saved; on by default, so a screen saved before it still closes on Back). With it off, Escape, a pad's cancel and the system's back leave the screen open: only its own buttons (`ui.back` included) and the game close it — a level-complete banner, a lost-controller pause. The inspector shows it under Behaviour. There Escape is not taken: it goes on to the game, like any key a screen does not want; the system's back is still taken, so it does not leave the app. The Problems dock says when such a screen has nothing on it that does anything, and when a layer has it off (Back never closes a layer).
+- `UiNavigator.canGoBack` and `handleBack()`: a player's back, which keeps a screen that does not close on Back; `back()`, what `ui.back` runs, still closes whatever is on top.
+
+### Changed
+
+- **Old files load with the new names, whatever their format.** A scene, prefab or timeline is renamed through the context's migrations on every load; a `.ui.json` screen at format 1 is renamed by its format step, and every screen is read with the reader's migrations (`SceneFormat.renameComponents`), so a component a kit renames later reads under its new name too.
+- The screens world reads files from the context's bundle by default; so do `UiThemes` and `UiFonts`.
+- `UiBuildContext.text(name)` applies the language as well as the bindings, as `resolve` does.
+- A sampled binding name reads in a previewed world even when no game offers it.
+- Layout: `ui_layer.dart` (2,010 lines) is a library with parts (`ui_element_builders`, `ui_node_boxes`, `ui_screen_route`, `ui_painted_text`, `ui_panel_image`, `ui_atlas_image`); `ui_canvas_view.dart` (1,367) has its gestures and preview worlds in parts.
+- Faster frames: the screen layer folds each node's revision into one hash without a list per entity, and reuses the text the text system resolved in the update just before the sync. It walks its tree again only when the world's shape changed (just_game_engine's `World.structureVersion`: an entity made, destroyed, switched or re-parented, a component added, removed or replaced) or a canvas was shown, hidden or reordered, and looks each entity's components up once per walk, not every frame: a still 1,641-entity screen syncs in about 1.15 ms instead of 1.57 ms, a 411-entity one in 0.29 ms instead of 0.36 ms (debug JIT). Field edits and bindings still show at the next sync; rainbow and pulse letters are laid out once and tinted as they are drawn; a theme's role styles and a text's style under a theme are worked out once.
+- The Interface editor lets the app idle: its canvas ticks only while something changes or moves.
+- The Problems dock's screen checks are kept per engine, read the screen list again only when it changed on disk, and stat the other files.
+- **A focus ring.** Whatever holds the keyboard or pad focus is ringed in the theme's `primary`, 3 design pixels clear of its edge and 3 thick: a button, a toggle and its label, a slider, a text field, a dropdown. Material's own focus look, a fill a tenth lighter, could not be seen from across a room. The ring shows on a button filled with `primary` too, since the gap between them shows what is behind.
 - A `UiEditorSession` with a context of its own installs the engine's built-in components (`BuiltInComponents.extension`).
-- **Breaking**: `UiSchemas` is `UiWorldDefinitions` (file `runtime/serialization/ui_world_definitions.dart`; was `ui_schemas.dart`): the definitions of the world-space `TextComponent` and `ButtonComponent`, beside `UiDefinitions` for the screen-space interface. The saved names and ids are unchanged.
+- The inspector uses just_editor_core 0.1.0's row names (`ColorFieldRow`, `BoolFieldRow`, `TextFieldRow`, `DropdownFieldRow`, `AssetRefFieldRow`, `EdgeInsetsFieldRow`, `ReadonlyFieldRow`) and `PrefabColors`; the module's commands say their `availability:` (`CommandAvailability`); Show, Hide and a theme's Use name the field they write (`ComponentFieldCommand(field:)`).
+
+### Fixed
+
+- The Interface editor wrote a screen list it had read earlier over a newer one, dropping the screens another tool, a pull or "Move screens out of the level" had listed (UIE-BUG-1). Every list write now starts from the file on disk, and the open editor is told when the list, a screen or a theme changes.
+- A panel's picture disappeared when nine-slice was set on it, until something else changed.
+- The typewriter cut an emoji, or a letter and its accent, in half.
+- `UiFonts.reset()` during a load let the old load take the new one's place.
+- A `UiLayer` given another world or navigator kept the first; the editor no longer works round it with a new key per world.
+- A screen name nothing has (`ui.push`, `ui.show`) did nothing silently: a debug build says so, once per name. A screen list that names no screens is said in the log.
+- With two engines installed, `ui.push` on one engine's screens opened the other's; one engine's list theme restyled another's text; the editor pointed every engine's theme and font loaders at the project.
+- A world text's or button's painter was never disposed: it goes with its component.
+- The `.pubignore` named files that do not exist, and missed `store/`.
+- A `sync()` with no world update since a binding changed showed the old value: the layer reused the text the text system had resolved before the change. It reuses that text only when the system resolved it after the layer's previous sync, and reads the text itself otherwise (an editor's preview, a paused game, a test).
+
+### Removed
+
+- `lib/src/runtime/components/screen/ui_custom_component.dart`, a re-export nothing imported.
+- The flat test files named by audit round; the tests mirror `lib/src/`.
 
 ## 0.1.0-alpha.1
 

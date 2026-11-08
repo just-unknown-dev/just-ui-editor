@@ -21,7 +21,7 @@ A screen (`UiDocument`):
 
 ```json
 {
-  "format": 1,
+  "format": 2,
   "name": "Pause",
   "entities": [
     {"name": "Pause", "parentName": null, "components": [...]},
@@ -31,7 +31,7 @@ A screen (`UiDocument`):
 }
 ```
 
-The first entity is the canvas, and every other entity sits under it. Parents are named, never numbered, because entity ids are handed out again each time a file is read. Siblings keep the order the file lists them in. The canvas's `visible` is not saved. Whether a screen is open is decided while the game runs, not in the file. The `editor` block (guides, sample values, the device) is the editor's alone, and a game never reads it. `UiDocument.currentFormat` is 1. A file from a newer format is refused rather than half read.
+The first entity is the canvas, and every other entity sits under it. Parents are named, never numbered, because entity ids are handed out again each time a file is read. Siblings keep the order the file lists them in. The canvas's `visible` is not saved. Whether a screen is open is decided while the game runs, not in the file. The `editor` block (guides, sample values, the device) is the editor's alone, and a game never reads it. `UiDocument.currentFormat` is 2. A format 1 file (from before the `Ui` prefix) is read with `TextComponent` and `ButtonComponent` renamed `UiTextComponent` and `UiButtonComponent`, and every file is read with the engine's own renames (`context.migrations`). A file from a newer format is refused rather than half read.
 
 The list (`UiScreenManifest`):
 
@@ -50,7 +50,7 @@ A screen marked `startOpen`, such as a HUD, shows from the first frame. The rest
 
 A screen file that will not read (a component from a plugin the game does not have, a value of the wrong kind) is left out and said so in the log; nothing of it is built. A game with no screen list, or one that will not read, runs with no screens. A value of the wrong kind is a `FormatException` that names it.
 
-Screens used to live inside a level's scene. `UiSceneExtractor.extract(scene)` splits such a scene into the scene without its canvases, one `UiDocument` per canvas, and a list entry for each.
+Screens used to live inside a level's scene. The editor's `UiSceneExtractor.extract(scene)` (in `editor.dart`) splits such a scene into the scene without its canvases, one `UiDocument` per canvas, and a list entry for each.
 
 ## Adding it to a game
 
@@ -78,21 +78,21 @@ Every argument to `install` is optional:
 |---|---|
 | `manifest` | Where the list is. `assets/ui/screens.json` by default |
 | `screens` | A `UiScreenManifest` to use instead of reading one |
-| `read` | Reads a text asset. The app bundle when null |
+| `read` | Reads a text asset. The engine's bundle (`EngineContext.bundle`) when null |
 | `input` | The actions that work menus from a pad. `UiInputActions()` means `ui/navigate`, `ui/submit` and `ui/cancel`; null leaves menus to the keyboard, mouse and touch |
-| `localise` | Turns a `@key` into words, in screens and in the level's own text and buttons |
+| `localize` | Turns a `@key` into words, in screens and in the level's own text and buttons |
 | `onSound` | Plays a UI sound by path: the theme's hover, press and toggle sounds |
 | `fonts` | A folder in the bundle whose font files are all loaded at boot (`UiFonts.loadFolder`). `assets/fonts/` by default; null loads none |
 
 What `install` puts into the engine:
 
-- **`UiScreens`**: every screen on the list, built once, in a `World` of their own with a `UiSystem`, a `TimelineSystem` and the navigator. Loading or clearing a level leaves them alone.
+- **`UiScreens`**: every screen on the list, built once, in a `World` of their own (on the engine's context) with a `UiTextSystem`, a `TimelineSystem` and the navigator. Loading or clearing a level leaves them alone.
 - **`UiScreensPlugin`**, an `EnginePlugin`, ticks that world every frame, paused or not and with no widget on screen. A pause menu keeps working while the game it paused is stopped.
 - **`UiScreensLayer`**, a `GameLayer` on `engine.layers`, draws the screens over the game in every `GameWidget`, and tells buttons in the level where the pointer is.
-- A `UiSystem` and a `UiPointerSystem` in the level's world, for text and buttons placed there (`registerUiSystems`).
+- A `UiTextSystem` and a `UiPointerSystem` in the level's world, for text and buttons placed there (`registerUiSystems`).
 - The theme and the language those are drawn with, on the engine's context (`UiWorldStyle`).
 
-Installing again replaces the screens and hands the level's systems the new `localise` and `onSound`. `JustGameUi.uninstall(engine)` takes out the screens, their layer and the language; the components stay known to the engine, since a level may still hold them.
+A screen list that names no screens is said in the log, as one that is missing or will not read is: a game with no HUD and no menus looks fine until someone presses pause. Installing again replaces the screens and hands the level's systems the new `localize` and `onSound`. `JustGameUi.uninstall(engine)` takes out the screens, their layer and the language; the components stay known to the engine, since a level may still hold them.
 
 ## Opening screens
 
@@ -108,22 +108,26 @@ screens?.reset();           // every screen as it was first built: a restart
 screens?.reloadFrom(manifest, read: read); // read every file again
 ```
 
-A button does the same by name: `ui.push Pause`, `ui.back`. A screen opens by its canvas's name, whatever else is called that; pushing a layer (a canvas that is not a screen) just shows it. Two screens may each hold an element of one name: `ui.show`, `ui.hide` and `timeline.play` look in the screen they are run from, or the one on top, first. Screens stack in `sortOrder` order, and among screens of one order, in the order they were opened.
+A button does the same by name: `ui.push Pause`, `ui.back`. In a debug build, a name nothing in the interface has is said in the log, once. A screen opens by its canvas's name, whatever else is called that; pushing a layer (a canvas that is not a screen) just shows it. Two screens may each hold an element of one name: `ui.show`, `ui.hide` and `timeline.play` look in the screen they are run from, or the one on top, first. Screens stack in `sortOrder` order, and among screens of one order, in the order they were opened.
 
-Android's back button and gesture (and a browser's back) close the screen on top while one is open. Once the interface is installed, `UiActions.defaults` answers `ui.push`, `ui.back`, `ui.show`, `ui.hide` and `ui.toggle` for whatever the game's `UiActions.host` leaves unset. So a game sets only what it handles itself:
+A player's back closes the screen on top while one is open: Escape, a pad's cancel (`ui/cancel`), Android's back button and gesture, and a browser's back. A screen whose canvas has **Closes on Back** off (`UiCanvasComponent.closesOnBack`) stays: only its own buttons (`ui.back` included) and the game close it. Use it for a level-complete banner or a lost-controller pause. On such a screen Escape goes on to the game, like any key a screen does not want, and the system's back does not leave the app. `UiNavigator.handleBack()` is a player's back; `back()` closes whatever is on top.
+
+Once the interface is installed, its engine's `UiActions.defaults` answers `ui.push`, `ui.back`, `ui.show`, `ui.hide` and `ui.toggle` for whatever the game's `UiActions.host` leaves unset. So a game sets only what it handles itself:
 
 ```dart
-UiActions.host = UiActionHost(pause: engine.pause, resume: engine.resume);
+UiActions.of(engine.context).host =
+    UiActionHost(pause: engine.pause, resume: engine.resume);
 ```
 
 ## What a screen reads, does and places
 
-A saved file cannot hold a Dart closure, so a screen names things and the game says what the names mean:
+A saved file cannot hold a Dart closure, so a screen names things and the game says what the names mean. Each engine has its own (`UiBindings.of(engine.context)` and so on), kept on its `EngineContext` like the engine's own registries: two engines in one process, or a game and an editor's preview, never read or run each other's, and a game's closures go with its engine. The screens share their game's context, so what the game registers is what its screens read.
 
 ```dart
-UiBindings.register('coins', () => signals.collected.value);  // "Coins: {coins}"
-UiActions.register('restart', (_) => restart());                // custom:restart
-UiWidgets.register(UiWidgetDefinition(
+final context = engine.context;
+UiBindings.of(context).register('coins', () => signals.collected.value); // "Coins: {coins}"
+UiActions.of(context).register('restart', (_) => restart());            // custom:restart
+UiWidgets.of(context).register(UiWidgetDefinition(
   id: 'touch_controls',
   label: 'Touch controls',
   build: (context) => TouchControls(engine: engine),
@@ -131,14 +135,14 @@ UiWidgets.register(UiWidgetDefinition(
 ));
 ```
 
-- **Bindings.** `{coins}`, with a format after a colon: `{time:mm:ss}`, `{score:n0}`, `{health:0.0}`, `{fill:%}`. `{{` writes a plain brace. `UiBindings.registerForEntity('health', (e) => …)` offers `{self.health}`, read from the entity the text belongs to. A name nobody offers stays on screen as written, and a number that is not finite is written `Infinity` or `NaN`.
-- **Languages.** A text that starts with `@` is a key: `@menu.resume`. It is looked up through `install(localise:)` on every label the inspector offers it for: texts, buttons, toggles, sliders, dropdowns and a field's hint.
+- **Bindings.** `{coins}`, with a format after a colon: `{time:mm:ss}`, `{score:n0}`, `{health:0.0}`, `{fill:%}`. `{{` writes a plain brace. `UiBindings.of(context).registerForEntity('health', (e) => …)` offers `{self.health}`, read from the entity the text belongs to. A name nobody offers stays on screen as written, and a number that is not finite is written `Infinity` or `NaN`.
+- **Languages.** A text that starts with `@` is a key: `@menu.resume`. It is looked up through `install(localize:)` on every label the inspector offers it for: texts, buttons, toggles, sliders, dropdowns and a field's hint.
 - **Actions.** The built-ins are in `UiActions.builtIns`: `signal`, `timeline.play`, `timeline.stop`, `scene.load`, `ui.show`, `ui.hide`, `ui.toggle`, `ui.push`, `ui.back`, `game.pause`, `game.resume`, `game.quit`, `audio.play`. `custom:<name>` runs one the game registered.
 - **Widgets.** A registered widget can be placed from the editor like a built-in one, with its props in the inspector, saved as a `UiCustomComponent`.
 
 Text also takes tags: `[b]`, `[i]`, `[color=…]`, `[size=…]`, `[font=…]`, `[icon=…]`, `[wave]`, `[shake]`, `[rainbow]`, `[pulse]`, `[link=…]`, `[br]`.
 
-- `[icon=name]` draws what `UiIcons` has under that name: `UiIcons.register('heart', Icons.favorite)` (a glyph, drawn everywhere) or `UiIcons.registerWidget('coin', (size) => Image.asset(…))` (a widget, drawn in screens only). A name nobody registered draws nothing.
+- `[icon=name]` draws what the engine's `UiIcons` has under that name: `UiIcons.of(context).register('heart', Icons.favorite)` (a glyph, drawn everywhere) or `UiIcons.of(context).registerWidget('coin', (size) => Image.asset(…))` (a widget, drawn in screens only). A name nobody registered draws nothing.
 - `[link=shop]Shop[/link]` runs `custom:shop` when tapped; a built-in takes its argument after a space, `[link=ui.push Credits]`. Links work in screen text that Flutter draws, not in world text or painted text.
 - `[wave]`, `[shake]`, `[rainbow]`, `[pulse]`, an outline, a gradient, and the Shrink overflow are drawn by the canvas painter, in a screen as in the level. A gradient does not combine with the moving tags.
 - In a screen, text always wraps at its box; `wrap` and Min font size are for the level's text (and for Shrink).
@@ -149,13 +153,15 @@ Register the bindings and the widgets in the editor too, so it can draw screens 
 
 A widget names a *role*, not a colour, so restyling a game means editing one file. A `.uitheme.json` (`UiTheme`) holds colour roles (`primary`, `onPrimary`, `surface`, `onSurface`, `accent`, `danger`, `success`, `muted`, `outline`), text styles by role (`body`, `title`, `heading`, `button`, `caption`, `value`, and any others a game names), a default corner radius and gap, and the sounds a menu makes (`hover`, `press`, `toggle`).
 
-A canvas names its theme. `UiThemes` reads it when the canvas is first drawn and keeps it. Until it arrives, the canvas draws with `UiThemes.fallback`. A theme that will not load is the fallback, and is not read again until `UiThemes.evict` forgets it. A tool replaces `UiThemes.loader` to read project files instead of the bundle.
+Whatever holds the keyboard or pad focus is ringed in the theme's `primary`, 3 design pixels clear of its edge and 3 thick: a button, a toggle and its label, a slider, a text field or a dropdown. A player walking a menu across a room can see where they are, whatever the control's own colour.
 
-Font files are loaded while the game runs, grouped into families by file name (`Inter-Bold.ttf` is `Inter`). `install` loads every font under `assets/fonts/` (`UiFonts.loadFolder`), so the families the editor offers from that folder are the ones the game draws. The folder must be listed under `flutter: assets:`, but `pubspec.yaml` needs no `fonts:` section. `UiFonts.loadAll(paths)` loads any others.
+A canvas names its theme. The engine's `UiThemes` (`UiThemes.of(context)`) reads it when the canvas is first drawn and keeps it. Until it arrives, the canvas draws with `fallback`, which is the screen list's theme once the interface is installed. A theme that will not load is the fallback, and is not read again until `evict` forgets it. A tool replaces `loader` to read project files instead of the bundle — for its own engine only.
+
+Font files are loaded while the game runs, grouped into families by file name (`Inter-Bold.ttf` is `Inter`). `install` loads every font under `assets/fonts/` (the engine's `UiFonts.loadFolder`), so the families the editor offers from that folder are the ones the game draws. The folder must be listed under `flutter: assets:`, but `pubspec.yaml` needs no `fonts:` section. `UiFonts.of(context).loadAll(paths)` loads any others. Flutter's own font registry is process-wide: a family loaded by one engine can be drawn by any.
 
 ## Text and buttons in the level
 
-`TextComponent` and `ButtonComponent` also work in a level's own world. They sit at an entity's transform and are painted on the game canvas, with the same styles, tags, bindings and language as a screen, in the screen list's theme (`UiWorldStyle`). Use them for a sign, a name over a head or a damage number. `install` adds their systems, and the layer passes them the pointer.
+`UiTextComponent` and `UiButtonComponent` also work in a level's own world (saved as those names since 0.2.0-alpha.1; a scene that saved `TextComponent` or `ButtonComponent` is renamed as it loads, whatever its format — `UiMigrations`). They sit at an entity's transform and are painted on the game canvas, with the same styles, tags, bindings and language as a screen, in the screen list's theme (`UiWorldStyle`). Use them for a sign, a name over a head or a damage number. `install` adds their systems, and the layer passes them the pointer.
 
 A button is pressed where it is drawn, turned and scaled with its entity, and the higher `layer` takes a press where two overlap; Can be pressed off draws it faded. The pointer reaches it only through what the screens let through: a press on a HUD button, or anywhere under a modal screen, is not a press in the world. It follows one pointer at a time (the first finger down), and a press made while the game is paused does not land when it resumes. Hover and press play the theme's sounds through `onSound`.
 
@@ -181,9 +187,11 @@ The header shows the file, a dot while there is unsaved work, Save, Undo and Red
 
 **On the canvas.** Below, Ctrl is Cmd on macOS. Drag to move, snapping to edges, centres and guides; hold Ctrl to place freely. The selection has eight resize handles. Drag on empty space for a marquee. Shift- or Ctrl-click adds to the selection, and Alt-click picks the container instead of the element. In a row or column, dragging a child reorders it. Drag guides out of the rulers, and drag them back to remove them. The wheel pans (Shift sideways), and Ctrl+wheel or a pinch zooms at the pointer. A right-click offers cut, copy, paste, duplicate, delete, select the container, bring to front, send to back, and hide. Drop palette tiles on the canvas or on a hierarchy row. Clicking a tile adds the element inside the selected container, on screen. The inspector has align and distribute, and anchor presets that keep the element where it is. Copy, cut, paste and duplicate take the children along, give every copy a free name, and keep a switched-off element switched off; a duplicate goes beside its own original. Every drag is one undo step, and a drag given up with Esc leaves none. Right-click a hierarchy row to switch an element off or on: that is saved, unlike the eye.
 
+The canvas ticks only while something changes or moves (a drag, Preview, text that types itself out), so an editor left open lets the app idle.
+
 **Preview** plays a copy of the screen: toggles, sliders, typing and Back change the copy, never the screen that is saved. An edit made while Preview is on starts the copy again.
 
-**Files.** New screens, copies and renames never take a file another screen has: two names can share one (`Main Menu` and `MainMenu` are both `main_menu.ui.json`), and the editor offers a free name instead. A screen's name must also differ from every other screen's and from its own elements'. Every write is whole or not at all, and stays inside the project. While `screens.json` does not read, the Screens panel says so and the editor writes nothing to it; the Problems dock says so too. Every file the editor writes, moves or deletes is reported to the editor, so the Assets dock and the next play-test read it again.
+**Files.** New screens, copies and renames never take a file another screen has: two names can share one (`Main Menu` and `MainMenu` are both `main_menu.ui.json`), and the editor offers a free name instead. A screen's name must also differ from every other screen's and from its own elements'. Every write is whole or not at all, and stays inside the project. While `screens.json` does not read, the Screens panel says so and the editor writes nothing to it; the Problems dock says so too. Every change to the list starts from the list as it is on disk, so whatever changed it while the editor was open (a pull, a hand edit, **Move screens out of the level**) is kept, and the open editor is told when the list, a screen or a theme changes. A theme changed on disk shows in the Theme tab unless the tab holds unsaved edits. Every file the editor writes, moves or deletes is reported to the editor, so the Assets dock and the next play-test read it again.
 
 | Keys | |
 |---|---|
@@ -201,7 +209,7 @@ The header shows the file, a dot while there is unsaved work, Save, Undo and Red
 **Outside the workspace**, the module also adds:
 
 - inspector rows for the interface's field types (text styles, actions, anchors, theme roles), which text and buttons in a level use too;
-- Problems dock checks (`UiChecks`) of every screen on the list: a missing or unreadable file or list, two screens with one name, `ui.push` to a screen not on the list or to a layer, an action, binding, widget or `[icon=…]` the game does not register, a `[link=…]` that cannot be clicked, a button that does nothing, a slider from more to less, a choice offered twice, a `flex` or a stretching spacer outside a row or a column, a theme that is not there or does not read, and a screen with nothing to focus;
+- Problems dock checks (`UiChecks`) of every screen on the list: a missing or unreadable file or list, two screens with one name, `ui.push` to a screen not on the list or to a layer, an action, binding, widget or `[icon=…]` the game does not register, a `[link=…]` that cannot be clicked, a button that does nothing, a slider from more to less, a choice offered twice, a `flex` or a stretching spacer outside a row or a column, a theme that is not there or does not read, a screen with nothing to focus, a screen Back does not close with nothing on it that does anything, and a layer with Closes on Back off;
 - the level's own text and buttons drawn in the game's theme (the screen list's);
 - a **Text** prefab in every Level Designer palette;
 - **Move screens out of the level**, a command and a right-click on a canvas in the scene tree (`UiLevelScreens.moveOut`). It writes each canvas still in the level to a `.ui.json`, lists it, and takes it out of the level in one undoable step. The files stay after an undo;
@@ -212,5 +220,5 @@ The theme is edited in the Theme tab. Every edit shows on the canvas at once, an
 
 ## Tests
 
-`flutter test`: 343 tests, runtime and editor.
+`flutter test`: 396 tests, runtime and editor. `test/` mirrors `lib/src/` (one folder per feature), and `test/library_layout_test.dart` checks the layout, the layers and that nothing the game imports reaches the editor.
 

@@ -1,24 +1,24 @@
 /// Everything the interface editor holds while it is open.
 library;
 
+import 'dart:convert';
+
 import 'package:flutter/widgets.dart';
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/io.dart' show FileSystemException;
 import 'package:just_editor_core/just_editor_core.dart';
 import 'package:just_signals/just_signals.dart';
 
-import '../../runtime/components/screen/ui_canvas_component.dart';
-import '../../runtime/components/button_component.dart';
-import '../../runtime/just_game_ui.dart';
-import '../../runtime/layer/ui_layer.dart';
-import '../../runtime/screens/ui_document.dart';
-import '../../runtime/screens/ui_scene_extractor.dart';
-import '../../runtime/screens/ui_screen_manifest.dart';
-import '../../runtime/theme/ui_theme.dart';
-import '../canvas/ui_canvas_metrics.dart';
+import '../../bindings/bindings.dart';
+import '../../controls/controls.dart';
+import '../../layout/layout.dart';
+import '../../screens/screens.dart';
+import '../../theme/theme.dart';
 import '../document/ui_screen_document.dart';
+import '../document/ui_theme_document.dart';
+import '../geometry/ui_canvas_metrics.dart';
 import '../project/ui_project.dart';
-import '../theme/ui_theme_document.dart';
+import '../project/ui_scene_extractor.dart';
 import 'ui_device.dart';
 
 /// Editing, or trying the screen out as a player would.
@@ -195,7 +195,7 @@ class UiEditorSession {
     previous?.dispose();
     // What the inspector says a style inherits is this screen's theme.
     final theme = themePathFor(next);
-    if (theme != null) UiThemes.usePreview(theme);
+    if (theme != null) UiThemes.of(context).usePreview(theme);
   }
 
   /// Writes the open screen to its file. True when it was written; false
@@ -428,11 +428,12 @@ class UiEditorSession {
       }
       // The list before the old file goes: a list naming a file that is
       // not there is the one thing a failure here must not leave.
-      final entries = [
-        for (final e in manifest.value.screens)
-          e.path == path ? e.copyWith(path: target) : e,
-      ];
-      project.writeManifest(manifest.value.withScreens(entries));
+      project.updateManifest(
+        (list) => list.withScreens([
+          for (final e in list.screens)
+            e.path == path ? e.copyWith(path: target) : e,
+        ]),
+      );
       if (target != path) project.deleteSync(path);
     } on Object catch (error) {
       refreshFiles();
@@ -457,12 +458,13 @@ class UiEditorSession {
       );
     }
     if (_listProblem case final problem?) return _fail(problem);
-    final entries = [
-      for (final e in manifest.value.screens)
-        if (e.path != path) e,
-    ];
     try {
-      project.writeManifest(manifest.value.withScreens(entries));
+      project.updateManifest(
+        (list) => list.withScreens([
+          for (final e in list.screens)
+            if (e.path != path) e,
+        ]),
+      );
       if (_doc?.path == path) _replace(null);
       project.deleteSync(path);
     } on Object catch (error) {
@@ -476,37 +478,39 @@ class UiEditorSession {
 
   /// Whether the screen at [path] shows from the game's first frame. False,
   /// with [lastError] saying why, when the list was not written.
-  bool setStartOpen(String path, bool startOpen) {
-    final list = manifest.value;
-    final entries = list.entryFor(path) == null
-        ? [...list.screens, UiScreenEntry(path: path, startOpen: startOpen)]
-        : [
-            for (final e in list.screens)
-              e.path == path ? e.copyWith(startOpen: startOpen) : e,
-          ];
-    return _writeList(list.withScreens(entries));
-  }
+  bool setStartOpen(String path, bool startOpen) => _writeList(
+    (list) => list.withScreens(
+      list.entryFor(path) == null
+          ? [...list.screens, UiScreenEntry(path: path, startOpen: startOpen)]
+          : [
+              for (final e in list.screens)
+                e.path == path ? e.copyWith(startOpen: startOpen) : e,
+            ],
+    ),
+  );
 
   /// Puts [path] on the game's list, or takes it off. False, with
   /// [lastError] saying why, when the list was not written.
-  bool setListed(String path, bool listed) {
-    final list = manifest.value;
-    final entries = listed
-        ? [
-            ...list.screens,
-            if (list.entryFor(path) == null) UiScreenEntry(path: path),
-          ]
-        : [
-            for (final e in list.screens)
-              if (e.path != path) e,
-          ];
-    return _writeList(list.withScreens(entries));
-  }
+  bool setListed(String path, bool listed) => _writeList(
+    (list) => list.withScreens(
+      listed
+          ? [
+              ...list.screens,
+              if (list.entryFor(path) == null) UiScreenEntry(path: path),
+            ]
+          : [
+              for (final e in list.screens)
+                if (e.path != path) e,
+            ],
+    ),
+  );
 
-  bool _writeList(UiScreenManifest next) {
+  /// Changes the list as it is on disk now (`UiProject.updateManifest`) —
+  /// never [manifest], which may be older than the file.
+  bool _writeList(UiScreenManifest Function(UiScreenManifest list) change) {
     if (_listProblem case final problem?) return _fail(problem);
     try {
-      project.writeManifest(next);
+      project.updateManifest(change);
     } on Object catch (error) {
       refreshFiles();
       return _fail('The screen list was not saved: ${_describe(error)}');
@@ -518,15 +522,14 @@ class UiEditorSession {
 
   /// Lists [path], when it is not yet. Throws when the list is not written.
   void _list(String path, {required bool startOpen}) {
-    final list = manifest.value;
-    if (list.entryFor(path) == null) {
-      project.writeManifest(
-        list.withScreens([
-          ...list.screens,
-          UiScreenEntry(path: path, startOpen: startOpen),
-        ]),
-      );
-    }
+    project.updateManifest(
+      (list) => list.entryFor(path) != null
+          ? list
+          : list.withScreens([
+              ...list.screens,
+              UiScreenEntry(path: path, startOpen: startOpen),
+            ]),
+    );
     refreshFiles();
     _changed([path, UiScreenManifest.defaultPath]);
   }
@@ -543,12 +546,37 @@ class UiEditorSession {
   /// read. The theme open before is let go — and what it showed unsaved
   /// with it.
   bool openTheme(String path) {
-    final next = UiThemeDocument.open(project, path);
+    final next = UiThemeDocument.open(
+      project,
+      path,
+      themes: UiThemes.of(context),
+    );
     if (next == null) return _fail('$path does not read as a theme.');
     final previous = theme.value;
     theme.value = next;
     previous?.dispose();
     return true;
+  }
+
+  /// The theme at [path] changed on disk — a pull, a hand edit, another
+  /// tool: the Theme tab shows it as it is now. Not while the tab holds
+  /// edits of its own (saving writes those), and not when the file says
+  /// what the tab shows already (its own save), so undo is kept.
+  void themeChanged(String path) {
+    final open = theme.value;
+    if (open == null || open.path != path || open.dirty.value) return;
+    final text = project.readSync(path);
+    if (text == null) return;
+    final UiTheme now;
+    try {
+      now = UiTheme.parse(text);
+    } on Object {
+      return;
+    }
+    if (jsonEncode(now.toJson()) == jsonEncode(open.theme.value.toJson())) {
+      return;
+    }
+    openTheme(path);
   }
 
   /// The theme a screen shows by: its own, else the game's.
@@ -741,6 +769,32 @@ class UiEditorSession {
     };
   }
 
+  /// [samples] as bindings read them — numbers as numbers — kept until
+  /// they change.
+  Map<String, Object?> get sampleValues {
+    final saved = _doc?.editorData.value;
+    if (!identical(saved, _sampledFrom)) {
+      _sampledFrom = saved;
+      _sampleValues = {
+        for (final entry in samples.entries)
+          entry.key: num.tryParse(entry.value) ?? entry.value,
+      };
+    }
+    return _sampleValues;
+  }
+
+  Object? _sampledFrom;
+  Map<String, Object?> _sampleValues = const {};
+
+  /// Makes [world] read the open screen's [samples] in place of the game's
+  /// bindings — the document's world, the copy Preview plays with, the
+  /// screens drawn behind. Only those worlds: a play-test on the same
+  /// engine reads the game's own values.
+  void showSamplesIn(World world) =>
+      UiBindings.of(context).showSamples(world, () => sampleValues);
+
+  /// Sets the value [binding] reads while the screen is previewed; null or
+  /// empty takes it away.
   void setSample(String binding, String? value) {
     final next = {...samples};
     if (value == null || value.isEmpty) {

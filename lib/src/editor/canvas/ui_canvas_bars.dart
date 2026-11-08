@@ -5,25 +5,24 @@ library;
 import 'package:flutter/material.dart';
 import 'package:just_editor_core/just_editor_core.dart';
 import 'package:just_signals/just_signals.dart';
+import 'package:meta/meta.dart';
 
-import '../../runtime/components/button_component.dart';
-import '../../runtime/components/screen/ui_canvas_component.dart';
-import '../../runtime/components/screen/ui_elements.dart';
-import '../../runtime/components/text_component.dart';
-import '../../runtime/logic/ui_bindings.dart';
+import '../../bindings/bindings.dart';
+import '../../controls/controls.dart';
+import '../../layout/layout.dart';
 import '../document/ui_screen_document.dart';
-import '../panels/screens_panel.dart';
 import '../session/ui_device.dart';
 import '../session/ui_editor_session.dart';
 
 /// Every binding the open screen reads, by name.
+@internal
 List<String> bindingsOf(UiScreenDocument doc) {
   final names = <String>{};
   for (final e in doc.world.entities) {
-    if (e.getComponent<TextComponent>() case final t?) {
+    if (e.getComponent<UiTextComponent>() case final t?) {
       names.addAll(UiBindings.namesIn(t.text));
     }
-    if (e.getComponent<ButtonComponent>() case final b?) {
+    if (e.getComponent<UiButtonComponent>() case final b?) {
       names.addAll(UiBindings.namesIn(b.label));
     }
     for (final plain in [
@@ -45,6 +44,7 @@ List<String> bindingsOf(UiScreenDocument doc) {
 
 /// Above the canvas: the device, the zoom, what is drawn over the screen,
 /// and Edit or Preview.
+@internal
 class UiCanvasToolbar extends StatelessWidget {
   const UiCanvasToolbar({super.key, required this.session});
 
@@ -251,10 +251,12 @@ class _DeviceButton extends StatelessWidget {
       return;
     }
     if (box == null) return;
-    final typed = await promptForName(
+    final typed = await showEditorPrompt(
       context,
-      'Screen size, width × height',
-      '${session.device.value.width.toInt()}x${session.device.value.height.toInt()}',
+      title: 'Screen size, width × height',
+      initial:
+          '${session.device.value.width.toInt()}x${session.device.value.height.toInt()}',
+      hint: 'Width × height',
     );
     if (typed == null) return;
     final parts = typed.toLowerCase().split(RegExp(r'[x×, ]+'));
@@ -324,6 +326,7 @@ class _Gap extends StatelessWidget {
 /// Below the canvas: what to try the screen with — other screens under it,
 /// its buttons in another state, made-up values for what it reads, bigger
 /// text — and what the last button pressed in Preview would have done.
+@internal
 class UiPreviewStrip extends StatefulWidget {
   const UiPreviewStrip({super.key, required this.session, this.onOpen});
 
@@ -551,7 +554,7 @@ class _UiPreviewStripState extends State<UiPreviewStrip> {
                             '{$name}',
                             overflow: TextOverflow.ellipsis,
                             style: InspectorField.labelStyle.copyWith(
-                              color: UiBindings.has(name)
+                              color: UiBindings.of(session.context).has(name)
                                   ? null
                                   : EditorTheme.warning,
                             ),

@@ -2,18 +2,19 @@
 library;
 
 import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/just_editor_core.dart';
+import 'package:meta/meta.dart';
 
-import '../../runtime/components/screen/ui_slot_component.dart';
+import '../../layout/layout.dart';
+import '../geometry/ui_canvas_metrics.dart';
+import '../geometry/ui_geometry.dart';
 import '../session/ui_editor_session.dart';
-import 'ui_canvas_metrics.dart';
-import 'ui_geometry.dart';
 
 /// Colours of the overlay: the editor's accent for what is selected, a
 /// quieter line for the rest.
+@internal
 abstract final class UiOverlayColors {
   static Color get selection => EditorTheme.accent;
   static Color get hover => EditorTheme.accent.withValues(alpha: 0.55);
@@ -26,6 +27,7 @@ abstract final class UiOverlayColors {
 }
 
 /// A flow child being dragged to a new place: the line where it would go.
+@internal
 class UiInsertMark {
   const UiInsertMark(this.from, this.to);
   final Offset from;
@@ -36,6 +38,7 @@ class UiInsertMark {
 /// element under it, a marquee, where a dragged child would land, a size
 /// while dragging. Read when painting, and told of a change with
 /// [changed], so a hover repaints the overlay and rebuilds nothing.
+@internal
 class UiCanvasOverlay extends ChangeNotifier {
   /// The pointer, in view pixels, or null when it is elsewhere.
   Offset? pointer;
@@ -60,6 +63,7 @@ class UiCanvasOverlay extends ChangeNotifier {
 }
 
 /// The overlay, painted in view pixels.
+@internal
 class UiCanvasPainter extends CustomPainter {
   UiCanvasPainter({
     required this.session,

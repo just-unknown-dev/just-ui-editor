@@ -2,30 +2,24 @@
 library;
 
 import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/io.dart' show Directory;
 import 'package:just_editor_core/just_editor_core.dart';
 
-import '../runtime/components/button_component.dart';
-import '../runtime/components/screen/ui_canvas_component.dart';
-import '../runtime/components/text_component.dart';
-import '../runtime/just_game_ui.dart';
-import '../runtime/screens/ui_document.dart';
-import '../runtime/screens/ui_screen_manifest.dart';
-import '../runtime/screens/ui_screens_layer.dart';
-import '../runtime/text/ui_fonts.dart';
-import '../runtime/theme/ui_theme.dart';
-import '../runtime/theme/ui_world_style.dart';
-
+import '../controls/controls.dart';
+import '../layout/layout.dart';
+import '../screens/screens.dart';
+import '../text/text.dart';
+import '../theme/theme.dart';
 import 'inspector/ui_extras.dart';
-import 'inspector/ui_field_builders.dart';
+import 'inspector/ui_field_editors.dart';
+import 'project/ui_checks.dart';
 import 'project/ui_level_screens.dart';
 import 'project/ui_project.dart';
-import 'validation/ui_checks.dart';
-import 'workspace/ui_workspace.dart';
+import 'session/ui_editor_session.dart';
+import 'ui_editor_workspace.dart';
 
 /// Adds the Interface editor to the engine editor:
 ///
@@ -57,6 +51,11 @@ class UiEditorModule extends EditorModule {
 
   EditorScope? _scope;
 
+  /// The sessions of the Interface workspaces open now: told when a screen,
+  /// the screen list or a theme changes on disk, so none writes over what
+  /// changed with a copy read before.
+  final Set<UiEditorSession> _sessions = {};
+
   UiProject get project => UiProject(root ?? Directory.current.path);
 
   @override
@@ -85,6 +84,8 @@ class UiEditorModule extends EditorModule {
         fullScreen: workspace.fullScreen,
         onToggleFullScreen: workspace.onToggleFullScreen,
         setCloseGuard: workspace.setCloseGuard,
+        onSession: (session, open) =>
+            open ? _sessions.add(session) : _sessions.remove(session),
       ),
     ),
   ];
@@ -107,13 +108,13 @@ class UiEditorModule extends EditorModule {
     DesignerCommand(
       id: 'ui.open',
       label: 'Open the Interface editor',
-      scope: CommandScope.editor,
+      availability: CommandAvailability.editor,
       run: (c) => c.scope.openWorkspace(workspaceId),
     ),
     DesignerCommand(
       id: 'ui.moveScreensOut',
       label: 'Move screens out of the level',
-      scope: CommandScope.editor,
+      availability: CommandAvailability.editor,
       isEnabled: (c) => UiLevelScreens.of(c.scope.world).isNotEmpty,
       run: (c) => moveScreensOut(c.scope),
     ),
@@ -196,14 +197,21 @@ class UiEditorModule extends EditorModule {
     ),
   ];
 
-  @override
-  Map<String, FieldEditorBuilder> get fieldEditors => UiFieldEditors.all;
+  /// The engine being edited's context, once registered: its bindings,
+  /// actions, widgets and themes are what the inspector offers.
+  EngineContext? _context() => _scope?.context;
 
   @override
-  List<ComponentEditorExtras> get componentExtras => UiExtras.all;
+  Map<String, FieldEditorBuilder> get fieldEditors =>
+      UiFieldEditors.all(_context);
 
   @override
-  List<InheritedColor> get inheritedColors => const [uiInheritedColor];
+  List<ComponentEditorExtras> get componentExtras => UiExtras.all(_context);
+
+  @override
+  List<InheritedColor> get inheritedColors => [
+    UiFieldEditors.inheritedColor(_context),
+  ];
 
   @override
   List<SceneValidator> get validators => const [UiChecks.run];
@@ -224,7 +232,7 @@ class UiEditorModule extends EditorModule {
       name: 'Text',
       category: 'Shapes',
       icon: Icons.text_fields,
-      color: PrefabColours.shape,
+      color: PrefabColors.shape,
       placement: PrefabPlacement.point,
       defaultSize: const Size(160, 32),
       description: 'Words in the level — which can read the game.',
@@ -232,7 +240,7 @@ class UiEditorModule extends EditorModule {
       build: (position, size) => [
         TransformComponent(position: Vector3(position.dx, position.dy, 0)),
         LayerComponent(),
-        TextComponent(text: 'Text', size: size),
+        UiTextComponent(text: 'Text', size: size),
       ],
     ),
   ];
@@ -241,9 +249,9 @@ class UiEditorModule extends EditorModule {
   List<EntityIcon> get entityIcons => [
     EntityIcon(
       id: 'ui.world',
-      of: (e) => e.hasComponent<TextComponent>()
+      of: (e) => e.hasComponent<UiTextComponent>()
           ? Icons.text_fields
-          : e.hasComponent<ButtonComponent>()
+          : e.hasComponent<UiButtonComponent>()
           ? Icons.smart_button
           : null,
     ),
@@ -259,17 +267,20 @@ class UiEditorModule extends EditorModule {
     _scope?.engine?.layers.setEnabled(UiScreensLayer.layerId, false);
   }
 
-  /// What [onRegister] pointed `UiThemes` and `UiFonts` at, so [dispose]
-  /// puts back only what is still this module's.
+  /// What [onRegister] pointed the edited engine's `UiThemes` and `UiFonts`
+  /// at, so [dispose] puts back only what is still this module's.
   Future<UiTheme> Function(String path)? _themeLoader;
   Future<ByteData> Function(String path)? _fontReader;
 
-  /// Themes and fonts from the project's files, not the bundle: saved a
-  /// moment ago, shown without a rebuild.
+  /// The edited engine's themes and fonts from the project's files, not the
+  /// bundle: saved a moment ago, shown without a rebuild. Another engine in
+  /// the process (a game running beside the editor) keeps its own.
   void _readFromProject() {
+    final context = _scope?.context;
+    if (context == null) return;
     final files = project;
-    UiThemes.loader = _themeLoader = files.loadTheme;
-    UiFonts.read = _fontReader = files.fontData;
+    UiThemes.of(context).loader = _themeLoader = files.loadTheme;
+    UiFonts.of(context).read = _fontReader = files.fontData;
   }
 
   /// After a hot reload: the loaders handed out again, from the code as it
@@ -284,11 +295,14 @@ class UiEditorModule extends EditorModule {
   /// something else has taken them over since.
   @override
   void dispose() {
-    if (_themeLoader != null && UiThemes.loader == _themeLoader) {
-      UiThemes.useBundle();
-    }
-    if (_fontReader != null && UiFonts.read == _fontReader) {
-      UiFonts.read = rootBundle.load;
+    final context = _scope?.context;
+    if (context != null) {
+      final themes = UiThemes.of(context);
+      if (_themeLoader != null && themes.loader == _themeLoader) {
+        themes.useBundle();
+      }
+      final fonts = UiFonts.of(context);
+      if (_fontReader != null && fonts.read == _fontReader) fonts.useBundle();
     }
     _themeLoader = null;
     _fontReader = null;
@@ -300,8 +314,10 @@ class UiEditorModule extends EditorModule {
   /// several files of a family reloaded alone would be that family's only
   /// face.
   Future<void> _reloadFonts() async {
-    UiFonts.reset();
-    await UiFonts.loadAll(project.fontFiles());
+    final context = _scope?.context;
+    if (context == null) return;
+    final fonts = UiFonts.of(context)..reset();
+    await fonts.loadAll(project.fontFiles());
   }
 
   /// The level's own text and buttons in the game's theme — the screen
@@ -311,7 +327,9 @@ class UiEditorModule extends EditorModule {
     final engine = _scope?.engine;
     if (engine == null) return;
     final path = project.readManifest().theme;
-    final theme = path == null ? null : await UiThemes.load(path);
+    final theme = path == null
+        ? null
+        : await UiThemes.of(engine.context).load(path);
     // Gone, or another asked for, while the theme was read.
     if (_scope?.engine != engine || project.readManifest().theme != path) {
       return;
@@ -322,9 +340,15 @@ class UiEditorModule extends EditorModule {
   @override
   void onAssetChanged(String path) {
     final lower = path.toLowerCase();
+    final context = _scope?.context;
     if (lower.endsWith('.uitheme.json')) {
-      UiThemes.evict(path);
-      unawaited(UiThemes.load(path));
+      for (final session in List.of(_sessions)) {
+        session.themeChanged(path);
+      }
+      if (context != null) {
+        final themes = UiThemes.of(context)..evict(path);
+        unawaited(themes.load(path));
+      }
       if (project.readManifest().theme == path) {
         unawaited(_styleLevelText());
       }
@@ -335,6 +359,9 @@ class UiEditorModule extends EditorModule {
     } else if (lower.endsWith('.${UiDocument.extension}') ||
         lower.endsWith('screens.json')) {
       if (lower.endsWith('screens.json')) unawaited(_styleLevelText());
+      for (final session in List.of(_sessions)) {
+        session.refreshFiles();
+      }
       final engine = _scope?.engine;
       final installed = engine == null ? null : JustGameUi.of(engine);
       if (installed != null) {

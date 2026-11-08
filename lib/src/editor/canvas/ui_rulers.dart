@@ -3,11 +3,13 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:just_editor_core/just_editor_core.dart';
+import 'package:meta/meta.dart';
 
-import 'ui_canvas_metrics.dart';
+import '../geometry/ui_canvas_metrics.dart';
 
 /// Paints the two rulers. Where the pointer is on the canvas is marked on
 /// both, and so is the selection's extent.
+@internal
 class UiRulersPainter extends CustomPainter {
   UiRulersPainter({
     required this.metrics,

@@ -4,11 +4,10 @@ library;
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/just_editor_core.dart';
 
-import '../../runtime/components/screen/ui_canvas_component.dart';
-import '../../runtime/screens/ui_document.dart';
-import '../../runtime/screens/ui_scene_extractor.dart';
-import '../../runtime/screens/ui_screen_manifest.dart';
+import '../../layout/layout.dart';
+import '../../screens/screens.dart';
 import 'ui_project.dart';
+import 'ui_scene_extractor.dart';
 
 /// One screen moved out of a level.
 class UiMovedScreen {
@@ -94,12 +93,11 @@ abstract final class UiLevelScreens {
       'entities': codec.encodeEntities(subtree),
     }, folder: folder);
 
-    var manifest = project.readManifest();
     final taken = {
       for (final path in project.screenFiles()) _key(project, path),
     };
     final moved = <UiMovedScreen>[];
-    final entries = [...manifest.screens];
+    final entries = <UiScreenEntry>[];
     String pathOf(String name) =>
         '$folder/${UiSceneExtractor.fileNameFor(name)}';
     for (var i = 0; i < extraction.documents.length; i++) {
@@ -124,8 +122,10 @@ abstract final class UiLevelScreens {
         UiMovedScreen(name: name, path: path, was: name == was ? null : was),
       );
     }
-    manifest = manifest.withScreens(entries);
-    project.writeManifest(manifest);
+    // The list as it is on disk now, with these added.
+    project.updateManifest(
+      (current) => current.withScreens([...current.screens, ...entries]),
+    );
 
     history.push(
       DeleteEntitiesCommand(

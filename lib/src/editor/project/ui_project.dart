@@ -2,15 +2,14 @@
 library;
 
 import 'dart:convert';
-
 import 'package:flutter/services.dart';
 import 'package:just_editor_core/io.dart';
 import 'package:just_editor_core/just_editor_core.dart'
     show PackageAssetPaths, ProjectFiles;
+import 'package:just_game_engine/just_game_engine.dart' show MigrationHooks;
 
-import '../../runtime/screens/ui_document.dart';
-import '../../runtime/screens/ui_screen_manifest.dart';
-import '../../runtime/theme/ui_theme.dart';
+import '../../screens/screens.dart';
+import '../../theme/theme.dart';
 
 /// Reads and writes the interface's files under a project folder: screens,
 /// the screen list, themes and fonts. Paths are project-relative with
@@ -90,12 +89,15 @@ class UiProject {
   /// Every screen file under `assets/`, listed or not, by path.
   List<String> screenFiles() => _filesEndingIn('.${UiDocument.extension}');
 
-  /// The screen at [path].
-  UiDocument readScreen(String path) {
+  /// The screen at [path], read with [hooks] — the edited engine's
+  /// migrations (`context.migrations`), so a component a package renamed
+  /// reads under its new name.
+  UiDocument readScreen(String path, {MigrationHooks? hooks}) {
     final text = readSync(path);
     if (text == null) throw FileSystemException('No such screen', path);
     return UiDocument.fromJson(
       (jsonDecode(text) as Map).cast<String, dynamic>(),
+      hooks: hooks,
     );
   }
 
@@ -103,7 +105,7 @@ class UiProject {
       writeJsonSync(path, document.toJson());
 
   /// The game's screen list — empty when it has none yet, and when it does
-  /// not read ([manifestProblem] says why; [writeManifest] then refuses).
+  /// not read ([manifestProblem] says why; [updateManifest] then refuses).
   UiScreenManifest readManifest([String path = UiScreenManifest.defaultPath]) =>
       _manifest(path).$1;
 
@@ -133,20 +135,30 @@ class UiProject {
     }
   }
 
-  /// Writes the screen list. Throws a [FormatException], and leaves the
-  /// file exactly as it is, while the one there does not read: written
-  /// over, every screen it lists — and its theme — would be lost.
-  void writeManifest(
-    UiScreenManifest manifest, [
+  /// Changes the screen list as it is on disk now, and returns what was
+  /// written: reads it, hands it to [change], and writes what comes back.
+  ///
+  /// Never from a copy read earlier: whatever changed the list since — a
+  /// hand edit, a pull, another tool, "Move screens out of the level" — is
+  /// what [change] is given, so it is kept.
+  ///
+  /// Throws a [FormatException], and leaves the file exactly as it is, while
+  /// the one there does not read: written over, every screen it lists — and
+  /// its theme — would be lost.
+  UiScreenManifest updateManifest(
+    UiScreenManifest Function(UiScreenManifest current) change, [
     String path = UiScreenManifest.defaultPath,
   ]) {
-    if (manifestProblem(path) case final problem?) {
+    final (current, problem) = _manifest(path);
+    if (problem != null) {
       throw FormatException(
         '$path does not read ($problem), so it was left as it is. Mend it '
         'by hand first.',
       );
     }
-    writeJsonSync(path, manifest.toJson());
+    final next = change(current);
+    writeJsonSync(path, next.toJson());
+    return next;
   }
 
   // ── Themes and fonts ───────────────────────────────────────────────────

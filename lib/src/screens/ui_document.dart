@@ -1,0 +1,345 @@
+/// One screen, as its `.ui.json` file holds it.
+library;
+
+import 'package:just_game_engine/just_game_engine.dart';
+
+import '../layout/layout.dart';
+import '../serialization/serialization.dart';
+
+/// A screen saved on its own: a canvas and everything under it.
+///
+/// ```json
+/// {
+///   "format": 2,
+///   "name": "Pause",
+///   "entities": [
+///     {"name": "Pause", "parentName": null, "components": [...]},
+///     {"name": "PauseCard", "parentName": "Pause", "components": [...]}
+///   ],
+///   "editor": {"guides": [], "samples": {}}
+/// }
+/// ```
+///
+/// The first entity is the canvas, the root of everything else; the order
+/// of the rest is the order of siblings. Parents are named, never numbered:
+/// entity ids are handed out afresh every time a file is read, so a file
+/// that saved them would describe a tree that no longer exists. The
+/// `editor` section is the editor's alone — guides, sample values — and a
+/// game never reads it.
+///
+/// Whether the screen starts open is not in here: that is a game's choice,
+/// made in its screen list ([UiScreenManifest]), not the screen's.
+class UiDocument {
+  /// A screen called [name], of [entities] (canvas first), with what only
+  /// the [editor] keeps.
+  UiDocument({
+    required this.name,
+    required List<Map<String, dynamic>> entities,
+    Map<String, dynamic>? editor,
+  }) : entities = List.unmodifiable(entities),
+       editor = Map.unmodifiable(editor ?? const {});
+
+  /// The file ending a screen is saved under.
+  static const String extension = 'ui.json';
+
+  /// The newest file format this reads and writes.
+  ///
+  /// - 1: the first.
+  /// - 2: the interface's components took the `Ui` prefix: `TextComponent`
+  ///   is `UiTextComponent`, `ButtonComponent` is `UiButtonComponent`
+  ///   ([UiMigrations.renamedTypes]).
+  static const int currentFormat = 2;
+
+  /// Brings an older file forward, one step per format: the step from
+  /// format n is at n.
+  static const Map<int, Map<String, dynamic> Function(Map<String, dynamic>)>
+  _steps = {1: _v1ToV2};
+
+  /// Format 1 → 2: every component the interface renamed, under its new
+  /// name.
+  static Map<String, dynamic> _v1ToV2(Map<String, dynamic> json) =>
+      SceneFormat.renameComponents(json, hooks: UiMigrations.hooks());
+
+  /// The screen's name — its canvas's, and what a game opens it by.
+  final String name;
+
+  /// Every entity, canvas first, each as `{name, parentName, components}`.
+  final List<Map<String, dynamic>> entities;
+
+  /// What only the editor keeps.
+  final Map<String, dynamic> editor;
+
+  /// Reads a document, migrating an older format. A newer one than this
+  /// code knows is refused rather than half-read, and a value of the wrong
+  /// kind (a hand edit, a merge gone wrong) is a [FormatException] naming
+  /// it — never a bare type error.
+  ///
+  /// [hooks] are the reading engine's migrations (`context.migrations`):
+  /// any component a package renamed (`renamedTypes`, `renamedFields`) is
+  /// read under its new name, whatever the file's format — the same pass a
+  /// scene goes through on every load.
+  factory UiDocument.fromJson(
+    Map<String, dynamic> json, {
+    MigrationHooks? hooks,
+  }) {
+    var data = json;
+    final rawFormat = data['format'];
+    if (rawFormat != null && rawFormat is! num) {
+      throw FormatException(
+        'A screen\'s "format" is $rawFormat, not a number.',
+      );
+    }
+    var format = (rawFormat as num?)?.toInt() ?? currentFormat;
+    if (format > currentFormat) {
+      throw FormatException(
+        'This screen was saved by a newer version (format $format; this '
+        'reads up to $currentFormat).',
+      );
+    }
+    while (format < currentFormat) {
+      final step = _steps[format];
+      if (step == null) {
+        throw FormatException('No way to bring format $format forward.');
+      }
+      data = step(data);
+      format++;
+    }
+    if (hooks != null) {
+      data = SceneFormat.renameComponents(data, hooks: hooks);
+    }
+    final rawEntities = data['entities'];
+    if (rawEntities != null && rawEntities is! List) {
+      throw const FormatException('A screen\'s "entities" is not a list.');
+    }
+    final entities = [
+      for (final e in (rawEntities as List?) ?? const [])
+        if (e is Map) e.cast<String, dynamic>(),
+    ];
+    if (entities.isEmpty) {
+      throw const FormatException('A screen needs at least its canvas.');
+    }
+    for (var i = 0; i < entities.length; i++) {
+      _checkRecord(entities[i], i);
+    }
+    final name = data['name'];
+    if (name != null && name is! String) {
+      throw FormatException('A screen\'s "name" is $name, not text.');
+    }
+    final editor = data['editor'];
+    return UiDocument(
+      name: name as String? ?? entities.first['name'] as String? ?? '',
+      entities: entities,
+      editor: editor is Map ? editor.cast<String, dynamic>() : null,
+    );
+  }
+
+  /// Each entity's own keys are the kinds [instantiate] reads.
+  static void _checkRecord(Map<String, dynamic> record, int index) {
+    void expect(String key, bool Function(Object value) ok, String kind) {
+      final value = record[key];
+      if (value != null && !ok(value)) {
+        final who = record['name'] is String
+            ? '"${record['name']}"'
+            : '#$index';
+        throw FormatException(
+          'Entity $who of a screen: "$key" is $value, not $kind.',
+        );
+      }
+    }
+
+    expect('name', (v) => v is String, 'text');
+    expect('parentName', (v) => v is String, 'text');
+    expect('components', (v) => v is List, 'a list');
+    expect('enabled', (v) => v is bool, 'true or false');
+  }
+
+  Map<String, dynamic> toJson() => {
+    'format': currentFormat,
+    'name': name,
+    'entities': entities,
+    if (editor.isNotEmpty) 'editor': editor,
+  };
+
+  /// A copy with other [editor] data.
+  UiDocument withEditor(Map<String, dynamic> editor) =>
+      UiDocument(name: name, entities: entities, editor: editor);
+
+  /// A copy whose canvas — and so the screen — is called [newName]; what
+  /// hung under the old name hangs under the new one.
+  UiDocument renamed(String newName) => UiDocument(
+    name: newName,
+    entities: [
+      for (final e in entities)
+        {
+          ...e,
+          if (e['name'] == name) 'name': newName,
+          if (e['parentName'] == name) 'parentName': newName,
+        },
+    ],
+    editor: editor,
+  );
+
+  /// Builds the screen in [world] and returns its canvas.
+  ///
+  /// [decode] turns one entity's saved components into components. The
+  /// default goes through [world]'s definitions (`world.context`) and stops
+  /// on a component nothing registered can read, naming it — a game must
+  /// not run half a screen.
+  /// The editor passes a decoder that keeps such components instead.
+  ///
+  /// Every record is read before anything is made: a screen that will not
+  /// read leaves nothing behind in [world] — no half a screen, open and in
+  /// the way.
+  ///
+  /// A name another screen in [world] already uses is fine: a screen opens
+  /// by its canvas's name, an element's `initialFocus` is looked for below
+  /// its own canvas, and `ui.show`, `ui.hide` and `timeline.play` look in
+  /// the screen they are run from before anywhere else.
+  Entity instantiate(
+    World world, {
+    List<Component> Function(List<dynamic> components)? decode,
+  }) {
+    final definitions = world.context.definitions;
+    final decoded = [
+      for (final record in entities)
+        [
+          for (final c
+              in decode?.call(record['components'] as List? ?? const []) ??
+                  _decodeStrictly(
+                    record['components'] as List? ?? const [],
+                    record['name'] as String?,
+                    definitions,
+                  ))
+            // Links are rebuilt from names below, never read from ids.
+            if (c is! ParentComponent && c is! ChildrenComponent) c,
+        ],
+    ];
+
+    final made = <Entity>[];
+    final byName = <String, Entity>{};
+    for (var i = 0; i < entities.length; i++) {
+      final record = entities[i];
+      final name = record['name'] as String?;
+      final entity = world.createEntityWithComponents(decoded[i], name: name);
+      if (record['enabled'] == false) entity.isActive = false;
+      made.add(entity);
+      if (name != null) byName.putIfAbsent(name, () => entity);
+    }
+    for (var i = 1; i < made.length; i++) {
+      final parentName = entities[i]['parentName'] as String?;
+      final parent = parentName == null ? made.first : byName[parentName];
+      link(made[i], parent ?? made.first);
+    }
+    return made.first;
+  }
+
+  /// Hangs [child] under [parent], both ends of the link.
+  static void link(Entity child, Entity parent) {
+    final existing = child.getComponent<ParentComponent>();
+    if (existing != null) {
+      existing.parentId = parent.id;
+    } else {
+      child.addComponent(ParentComponent(parentId: parent.id));
+    }
+    if (!parent.hasComponent<ChildrenComponent>()) {
+      parent.addComponent(ChildrenComponent());
+    }
+    parent.getComponent<ChildrenComponent>()!.addChild(child.id);
+  }
+
+  /// The screen under [canvas] in [world], as a document.
+  ///
+  /// Parents first and siblings in their parent's order, which is the
+  /// order a file must hold them in. [encode] turns an entity's components
+  /// into their saved form (the editor keeps what it could not read); the
+  /// default goes through [world]'s definitions. The canvas's `visible` is
+  /// left
+  /// out: whether a screen is open is play, not authoring.
+  static UiDocument capture(
+    Entity canvas,
+    World world, {
+    List<Map<String, dynamic>> Function(Iterable<Component> components)? encode,
+    Map<String, dynamic>? editor,
+  }) {
+    final definitions = world.context.definitions;
+    final write =
+        encode ??
+        (Iterable<Component> components) => [
+          for (final c in components) ?definitions.encode(c),
+        ];
+    final records = <Map<String, dynamic>>[];
+    void walk(Entity entity, String? parentName) {
+      records.add({
+        'name': entity.name,
+        if (!entity.isActive) 'enabled': false,
+        'parentName': parentName,
+        'components': [
+          for (final json in write(entity.components))
+            if (json['type'] != 'ParentComponent' &&
+                json['type'] != 'ChildrenComponent')
+              identical(entity, canvas) ? _withoutVisible(json) : json,
+        ],
+      });
+      final children = entity.getComponent<ChildrenComponent>()?.childIds;
+      for (final id in children ?? const <EntityId>[]) {
+        final child = world.getEntity(id);
+        if (child != null) walk(child, entity.name);
+      }
+    }
+
+    walk(canvas, null);
+    return UiDocument(
+      name: canvas.name ?? '',
+      entities: records,
+      editor: editor,
+    );
+  }
+
+  static Map<String, dynamic> _withoutVisible(Map<String, dynamic> json) {
+    if (json['type'] != 'UiCanvasComponent') return json;
+    final fields = json['fields'];
+    if (fields is! Map || !fields.containsKey('visible')) return json;
+    return {
+      ...json,
+      'fields': {...fields.cast<String, dynamic>()}..remove('visible'),
+    };
+  }
+
+  static List<Component> _decodeStrictly(
+    List<dynamic> json,
+    String? name,
+    ComponentDefinitionRegistry registry,
+  ) {
+    return [
+      for (final item in json)
+        if (item is Map)
+          registry.decode(item.cast<String, dynamic>()) ??
+              (throw _unknown(registry, item['type'] as String?, name)),
+    ];
+  }
+
+  /// The failure to read a component saved as [type] on [entity], with
+  /// [registry]'s hint for the type, if it has one.
+  static UnknownComponentTypeException _unknown(
+    ComponentDefinitionRegistry registry,
+    String? type,
+    String? entity,
+  ) => UnknownComponentTypeException(
+    type ?? '(no type)',
+    entityName: entity,
+    hint: type == null ? null : registry.unknownTypeHint(type),
+  );
+
+  /// The canvas component of the screen's root record, decoded — for
+  /// reading its settings (design size, theme) without building anything.
+  UiCanvasComponent? get canvasSettings {
+    for (final c in (entities.first['components'] as List? ?? const [])) {
+      if (c is Map && c['type'] == 'UiCanvasComponent') {
+        // Through the canvas's own definition: this reads settings, and
+        // needs no engine to do it.
+        return UiScreenDefinitions.canvas.decode(c.cast<String, dynamic>());
+      }
+    }
+    return null;
+  }
+}

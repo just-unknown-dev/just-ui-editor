@@ -36,9 +36,9 @@ A bug report should have:
 - the output of `flutter --version`, and the platform (Android, iOS, Linux, macOS, Windows, web; for the web, the browser and whether it was a JavaScript or a WebAssembly build);
 - where it happens: in a running game, in the Interface editor (in Edit or in Preview), or both;
 - the screen's `.ui.json`, or the smallest part of it that shows the problem, and the game's `assets/ui/screens.json`; for a problem with how things look, the `.uitheme.json` too;
-- for text or a button placed in a level, the entity's saved `TextComponent` or `ButtonComponent` from the scene file;
+- for text or a button placed in a level, the entity's saved `UiTextComponent` or `UiButtonComponent` from the scene file;
 - for a layout bug, the screen size or the editor's device preset, the canvas's design size, scale mode and safe area, and a screenshot;
-- for a binding, an action or a custom widget, what the game registers with `UiBindings.register`, `UiActions.register` or `UiWidgets.register`;
+- for a binding, an action or a custom widget, what the game registers with `UiBindings.of(context).register`, `UiActions.of(context).register` or `UiWidgets.of(context).register`, and on which engine's context;
 - for a menu worked from a gamepad, the `UiInputActions` given to `JustGameUi.install`, and whether those actions fire in `just_inputs` on their own. If they don't, the bug belongs in [just_inputs](https://github.com/just-unknown-dev/just-inputs/issues);
 - for an editor bug, what you clicked or pressed, and any lines it left in the editor's Console.
 
@@ -52,14 +52,14 @@ For a feature, open an issue labelled **`enhancement`** that describes the probl
 
 | Tool | Minimum version |
 |------|-----------------|
-| Dart | 3.11.0 |
-| Flutter | A stable release that ships Dart 3.11.0 or later |
+| Dart | 3.12.0 |
+| Flutter | 3.47.1 |
 
-Those are this package's own constraints. Its dependencies ask for more: `just_game_engine` and `just_inputs` need Flutter 3.44.0, and `just_inputs` needs Dart 3.12.0.
+Those are this package's own constraints (`pubspec.yaml`), and the floor of `just_game_engine` (Flutter GPU, `just_box_2d` and `just_jolt`).
 
 There is no app to run here: you work on the package and its tests. To try a change in a real game, add the package to the game as a path dependency (`path: ../just_ui_editor`). The game imports `package:just_ui_editor/just_ui_editor.dart`. Only its editor entry point imports `package:just_ui_editor/editor.dart` and passes `UiEditorModule()` to `JustGameEditorPlugin.register`.
 
-`flutter pub get` needs a checkout of `just_game_engine_editor` first, because it is not on pub.dev. See [Working Against Unpublished Dependencies](#working-against-unpublished-dependencies).
+`flutter pub get` resolves every dependency from pub.dev. To work against a version that is not published yet, see [Working Against Unpublished Dependencies](#working-against-unpublished-dependencies).
 
 ```bash
 git clone https://github.com/just-unknown-dev/just-ui-editor.git just_ui_editor
@@ -74,22 +74,22 @@ If you're working from the Just engine monorepo, run every command from `plugins
 
 ## Working Against Unpublished Dependencies
 
-The package's `just_*` dependencies are `just_game_engine`, `just_inputs` and `just_signals`, plus two that `pubspec.yaml` marks as design-time only: `just_game_engine_editor` and `just_game_engine_formats`. `just_game_engine_editor` is not published on pub.dev (its `pubspec.yaml` says `publish_to: none`), so you always need a checkout of it. Check out any other one too when `flutter pub get` cannot find the version this package asks for, or when your change needs an unreleased version. Put the checkouts next to this repository and point the package at them with a `pubspec_overrides.yaml` in the repository root:
+The package's `just_*` dependencies are `just_game_engine`, `just_inputs` and `just_signals`, which the runtime uses, and `just_editor_core`, which only `lib/editor.dart` reaches: `pubspec.yaml` marks it design-time only. `just_game_engine_editor` is a dev dependency, for the tests that host the module in a real editor. All of them are on pub.dev. Check one out when your change needs an unreleased version, put the checkout next to this repository, and point the package at it with a `pubspec_overrides.yaml` in the repository root:
 
 ```yaml
 # pubspec_overrides.yaml: local only; .gitignore keeps it out of commits.
 dependency_overrides:
   just_game_engine:
     path: ../just_game_engine
+  just_editor_core:
+    path: ../just_editor_core
   just_game_engine_editor:
     path: ../just_game_engine_editor
-  just_game_engine_formats:
-    path: ../just_game_engine_formats
   just_inputs:
     path: ../just_inputs
   # A dependency of a dependency is overridden the same way:
-  just_physics_engine:
-    path: ../just_physics_engine
+  just_game_engine_formats:
+    path: ../just_game_engine_formats
 ```
 
 Then run `flutter pub get`. Delete an entry and run `flutter pub get` again to go back to the published version.
@@ -102,39 +102,36 @@ No other package depends on this one; games do. A game lists it under `dependenc
 
 ## How the Package Fits Together
 
-One package holds two libraries: the runtime a game ships, and an editor that never ships.
+One package holds two libraries: the runtime a game ships, and an editor that never ships. `lib/src/` is laid out by feature, one folder each, and each folder has one barrel named after it (`text/text.dart`) that exports what the folder makes public; a file no barrel exports marks its public declarations `@internal`. The features sit in layers, and a feature imports only its own layer or those below — `test/library_layout_test.dart` checks all of it.
 
-| Folder | Contents |
-|--------|----------|
-| `lib/just_ui_editor.dart` | The runtime library, the only one a game imports |
-| `lib/editor.dart` | The editor library: `UiEditorModule` and what it is built from. Only an editor entry point imports it |
-| `lib/src/runtime/text/` | `UiTextStyle`, rich-text tags (`UiRichText`), `UiTextPainter`, `UiFonts` |
-| `lib/src/runtime/theme/` | `UiTheme`, `UiPalette`, `UiSounds`, and `UiThemes`, which loads and keeps them |
-| `lib/src/runtime/logic/` | `UiBindings` and `UiActions`: what a screen reads from the game and does to it |
-| `lib/src/runtime/layer/` | `UiLayer` (screens as Flutter widgets), `UiNavigator`, `UiWidgets` (widgets a game registers), `UiInputBridge` |
-| `lib/src/runtime/components/` | `TextComponent` and `ButtonComponent` for the level; under `screen/`, `UiCanvasComponent`, `UiSlotComponent` and the elements |
-| `lib/src/runtime/systems/` | `UiSystem`, `UiPointerSystem`, `registerUiSystems` |
-| `lib/src/runtime/serialization/` | How it is saved: `UiDefinitions` (screen components), `UiWorldDefinitions` (text and buttons in the level), `UiFieldTypes` |
-| `lib/src/runtime/screens/` | Screens as files: `UiDocument` (`.ui.json`), `UiScreenManifest` (`screens.json`), `UiScreens`, `UiScreensPlugin`, `UiScreensLayer`, `UiSceneExtractor` |
-| `lib/src/runtime/just_game_ui.dart` | `JustGameUi`: `extension`, `install`, `of`, `uninstall` |
-| `lib/src/editor/` | `UiEditorModule` (`ui_editor_module.dart`) and the Interface workspace (`workspace/`) |
-| `lib/src/editor/canvas/`, `panels/`, `inspector/`, `theme/` | The canvas with its toolbar and preview strip; the Screens, Hierarchy, Widgets and Inspector panels; inspector rows for the interface's field types (`UiFieldEditors`); the Theme tab |
-| `lib/src/editor/document/`, `session/`, `create/` | `UiScreenDocument` (one screen, with its own world and undo), `UiEditorSession` and its edit operations, `UiCreateOptions` |
-| `lib/src/editor/project/`, `validation/` | `UiProject` (the project's files), `UiLevelScreens` (moving screens out of a level), `UiChecks` (the Problems dock) |
-| `just_store.json` | The Asset Store manifest (a `kit`, shown as Interface). It names the runtime extension (`JustGameUi.extension`) and the editor module (`UiEditorModule`) that a game's generated `store_extensions.g.dart` and `store_modules.g.dart` list, and the editor-only libraries (`editor.dart`, `src/editor/`) |
-| `test/` | The runtime's tests; `test/editor/` holds the editor's |
+| Layer (bottom first) | Folder | Contents |
+|---|---|---|
+| 1 | `lib/src/text/` | `UiTextStyle`, rich-text tags (`UiRichText`), `UiIcons`, `UiTextPainter`, `UiFonts` |
+| 1 | `lib/src/bindings/` | `UiBindings`; `UiAction`, `UiActionList`, `UiActionHost` and `UiActions`: what a screen reads from the game and does to it |
+| 2 | `lib/src/theme/` | `UiTheme`, `UiPalette`, `UiSounds`; `UiThemes`, which loads and keeps them; `UiWorldStyle`, the look of the level's own text |
+| 3 | `lib/src/layout/` | `UiCanvasComponent`, `UiSlotComponent` and `UiAnchor`, `UiLayoutComponent` (`UiFlexAlign`), `UiPanelComponent`, `UiSpacerComponent` |
+| 4 | `lib/src/controls/` | `UiElementComponent`, `UiTextComponent`, `UiButtonComponent`, the other controls, `UiWidgets` (widgets a game registers), `UiTextSystem` |
+| 5 | `lib/src/world/` | Text and buttons in the level: `UiTextComponentPainter`, `UiButtonComponentPainter`, `UiPointerSystem`, `registerUiSystems` |
+| 6 | `lib/src/serialization/` | How it is saved: `UiScreenDefinitions`, `UiWorldDefinitions`, `UiFieldTypes`, `UiMigrations` (the renames), and the components extension (`@internal`) |
+| 7 | `lib/src/screens/` | `JustGameUi`; screens as files (`UiDocument`, `UiScreenManifest`) and as widgets (`UiScreens`, `UiScreensPlugin`, `UiScreensLayer`, `UiLayer` and its parts, `UiNavigator`, `UiInputBridge`) |
+| 8 | `lib/src/editor/` | The Interface editor: `UiEditorModule` and `UiEditorWorkspace` at its top, then, bottom first, `project/` (`UiProject`, `UiLevelScreens`, `UiSceneExtractor`, `UiChecks`), `document/`, `geometry/`, `session/`, `inspector/`, `canvas/`, `panels/` |
+| | `lib/just_ui_editor.dart` | The runtime library, the only one a game imports: the seven runtime barrels |
+| | `lib/editor.dart` | The editor library: `src/editor/editor.dart`. Only an editor entry point imports it |
+| | `just_store.json` | The Asset Store manifest (a `kit`, shown as Interface). It names the runtime extension (`JustGameUi.extension`), the editor module (`UiEditorModule`), and the editor-only libraries (`editor.dart`, `src/editor/`) |
+| | `test/` | Mirrors `lib/src/`: `test/<feature>/…`, and `test/editor/<part>/…`. `test/support/` holds the runtime tests' helpers |
 
 A few rules hold the package together. Keep them:
 
-- **The runtime never reaches the editor.** Nothing under `lib/src/runtime/` imports `lib/src/editor/`, `lib/editor.dart` or `just_game_engine_editor`. The editor imports the runtime, never the other way round. A game's release check (`just game check release-imports`, from `just_game_engine_cli`) fails when the game's entry point reaches a library that `just_store.json` lists under `editor.editorOnlyLibraries`. No test in this repository checks the split, so check it yourself (see [Coding Guidelines](#coding-guidelines)).
-- **The runtime runs wherever the game does**, the web included, so it never touches files. It reads assets through seams: `rootBundle` by default, the `read` argument of `JustGameUi.install`, `UiThemes.loader` and `UiFonts.read`. The editor replaces them to read the project from disk. File access lives in the editor, in `UiProject`.
-- **Saved files must keep loading.** A screen (`UiDocument`) and the screen list (`UiScreenManifest`) carry `format: 1`, and both refuse a newer format rather than half-read it. A theme (`UiTheme`) writes `formatVersion: 1`. A new field is optional, with a default that keeps the old behaviour, and then needs no new format. A change old files cannot take raises `UiDocument.currentFormat` and adds a step to `UiDocument.migrations`. Never rename or reuse a key, and add a test that reads JSON written before your change.
+- **The runtime never reaches the editor.** Nothing outside `lib/src/editor/` imports it, `lib/editor.dart`, `just_editor_core`, `just_game_engine_editor` or `just_signals`. The editor imports the runtime, never the other way round. `test/library_layout_test.dart` checks it, and that `lib/just_ui_editor.dart` reaches nothing under `src/editor/`. A game's release check (`just game check release-imports`, from `just_game_engine_cli`) fails too when the game's entry point reaches a library that `just_store.json` lists under `editor.editorOnlyLibraries`.
+- **Each engine has its own.** `UiBindings`, `UiActions`, `UiWidgets`, `UiIcons`, `UiThemes`, `UiFonts` and `UiWorldStyle` live on an `EngineContext` (`UiBindings.of(context)`), never in a static, so two engines — a game and an editor's preview — never share them. Code that reads them finds the context through the world it has (`entity.world!.context`, `widget.world.context`). Keep new state the same way.
+- **The runtime runs wherever the game does**, the web included, so it never touches files. It reads assets through seams: the context's bundle by default, the `read` argument of `JustGameUi.install`, and the engine's `UiThemes.loader` and `UiFonts.read`. The editor replaces them to read the project from disk. File access lives in the editor, in `UiProject`.
+- **Saved files must keep loading.** A screen (`UiDocument`) carries `format: 2` and the screen list (`UiScreenManifest`) `format: 1`; both refuse a newer format rather than half-read it. A theme (`UiTheme`) writes `formatVersion: 1`. A new field is optional, with a default that keeps the old behaviour, and then needs no new format. A change old files cannot take raises `UiDocument.currentFormat` and adds a step to `UiDocument`'s private `_steps`. Never rename or reuse a key without a migration, and add a test that reads JSON written before your change.
 - **A screen file links by name.** Each entity is `{name, parentName, components}`: the canvas first, parents before children, siblings in file order. Entity ids are handed out afresh on every read, so they are never saved, and `ParentComponent` and `ChildrenComponent` are rebuilt from the names. The canvas's `visible` is not saved: whether a screen starts open is the game's choice (`startOpen` in `screens.json`). The `editor` block (guides, sample values, the device) is the editor's alone, and the runtime never reads it.
-- **Saved names never change.** Files hold component types (`UiCanvasComponent`, `TextComponent`, …), field names, the definition ids `text_effcff19` and `button_388d5c40`, enum values (saved by name), action kinds (`UiActions.builtIns`) and text tags (`[b]`, `[color=…]`). They are the names the engine used before the runtime moved here, so older scenes still load. Never rename one.
-- **Files name things; the game says what the names mean.** A button saves a `UiActionList` of `{kind, arg}`, a text saves `{coins}`, a custom widget saves its `widgetId`, and the game fills `UiActions`, `UiBindings` and `UiWidgets`. A file never holds a closure. A name nobody registered must not take the game down: an unknown action does nothing, and an unknown binding stays on screen as written. `UiChecks` reports them in the Problems dock instead, and stays quiet while the game has registered nothing, because then it cannot tell.
-- **Definitions are built in getters.** `UiDefinitions` and `UiWorldDefinitions` make each definition in a getter, not a `static final`, so `JustGameUi.extension` can put the current code in place after a hot reload; `test/ui_refresh_test.dart` checks it. A new component goes in `UiDefinitions.all` (screens) or `UiWorldDefinitions.all` (the level). A new field type needs an inspector row in `UiFieldEditors.all`, found by its `id`. A new element for the palette goes in `UiCreateOptions.builtIns`.
-- **The layer only notices what it is told.** `UiLayerState` rebuilds one node when `_revisionOf` changes, and the tree when `_structure` changes (both in `lib/src/runtime/layer/ui_layer.dart`). A field you add to a UI component must be in one of them, or the screen will not show the change.
-- **Edits are undoable, and reach disk on Save.** Edits to a screen go through its `UiScreenDocument.history`, and edits to the theme through `UiThemeDocument.history`. A drag's `UiSlotEditCommand`s merge, so a whole drag is one undo step. File operations write at once instead: creating, duplicating, renaming or deleting a screen, and changing the game's list in the Screens panel. So does **Move screens out of the level** (`UiLevelScreens.moveOut`), whose files stay after an undo. Write files through `UiProject`: it writes a `.saving` file and renames it into place, so a crash never leaves half a screen, and it writes JSON with two-space indents and a final newline.
+- **Saved names change only with a migration.** Files hold component types (`UiCanvasComponent`, `UiTextComponent`, …), field names, the definition ids `text_effcff19` and `button_388d5c40`, enum values (saved by name), action kinds (`UiActions.builtIns`) and text tags (`[b]`, `[color=…]`). To rename a component, add the old name to `UiMigrations.renamedTypes` (keep the old entries: renames chain). The engine applies it to every scene, prefab and timeline it loads, whatever the format, and `UiDocument` to every screen (a format step, and the reader's `context.migrations`). Add a test that an old scene and an old `.ui.json` load (`test/serialization/ui_migrations_test.dart`).
+- **Files name things; the game says what the names mean.** A button saves a `UiActionList` of `{kind, arg}`, a text saves `{coins}`, a custom widget saves its `widgetId`, and the game fills its engine's `UiActions`, `UiBindings` and `UiWidgets`. A file never holds a closure. A name nobody registered must not take the game down: an unknown action does nothing, and an unknown binding stays on screen as written. `UiChecks` reports them in the Problems dock instead, and stays quiet while the game has registered nothing, because then it cannot tell.
+- **Definitions are built in getters.** `UiScreenDefinitions` and `UiWorldDefinitions` make each definition in a getter, not a `static final`, so `JustGameUi.extension` can put the current code in place after a hot reload; `test/serialization/ui_components_extension_test.dart` checks it. A new component goes in `UiScreenDefinitions.all` (screens) or `UiWorldDefinitions.all` (the level). A new field type needs an inspector row in `UiFieldEditors.all`, found by its `id`. A new element for the palette goes in `UiCreateOptions.builtIns`.
+- **The layer only notices what it is told.** `UiLayerState` rebuilds one node when `_revisionOf` changes, and the tree when `_structure` changes (both in `lib/src/screens/ui_layer.dart`; what each kind of element becomes is in its part `ui_element_builders.dart`). A field you add to a UI component must be in one of them, or the screen will not show the change. A new UI component type must also be in `_UiParts`, the components the layer looks up once per walk: it walks the tree again only when the world's `structureVersion` moves (an entity made, destroyed, switched or re-parented, a component added, removed or replaced) or a canvas is shown, hidden or reordered. Code that reorders a `ChildrenComponent`'s list in place calls `world.markStructureChanged()` (or the layer's `markDirty()`).
+- **Edits are undoable, and reach disk on Save.** Edits to a screen go through its `UiScreenDocument.history`, and edits to the theme through `UiThemeDocument.history`. A drag's `UiSlotEditCommand`s merge, so a whole drag is one undo step. File operations write at once instead: creating, duplicating, renaming or deleting a screen, and changing the game's list in the Screens panel. So does **Move screens out of the level** (`UiLevelScreens.moveOut`), whose files stay after an undo. Write files through `UiProject`: it writes a `.saving` file and renames it into place, so a crash never leaves half a screen, and it writes JSON with two-space indents and a final newline. Change the screen list only through `UiProject.updateManifest`, which reads the list on disk first: a copy read earlier would write over whatever changed it since.
 - **Preview never touches the game.** In Preview, buttons run against a private `UiActionHost`, and the preview strip says what they would have done. The game's own screens show over the editor's viewport only while a play-test runs.
 - **The module is not a Level Designer.** Its Text prefab is in `sharedPrefabs`. A module with `prefabs` counts as a designer (`EditorModule.providesLevelDesigner`), so don't move it there.
 
@@ -152,33 +149,28 @@ flutter test
 flutter test test/editor
 
 # One file.
-flutter test test/ui_screens_test.dart
+flutter test test/screens/ui_screens_test.dart
 ```
 
-**Runtime and editor tests.** The files directly under `test/` test the runtime. They import `just_ui_editor.dart`, the engine and `just_inputs`, and nothing from the editor, so they see the package the way a game does. Keep it that way. The editor's tests are in `test/editor/`.
+**Runtime and editor tests.** `test/` mirrors `lib/src/`. The runtime's tests (every folder but `test/editor/`) import `just_ui_editor.dart`, the engine and `just_inputs`, and nothing from the editor, so they see the package the way a game does. Keep it that way. The editor's tests are in `test/editor/`, by the part they test. `test/library_layout_test.dart` checks the layout, the layers, the runtime/editor split, that no name is exported by both libraries, and that `just_store.json` agrees with `pubspec.yaml`.
 
-**The saved formats.** `test/ui_screens_test.dart` pins the screen file (canvas first, parents by name, no ids, no `visible`, a newer format refused), the screen list, and `UiSceneExtractor`, which takes screens out of an old scene. `test/ui_foundations_test.dart` and `test/ui_world_test.dart` check that text styles, actions, themes, text and buttons survive a save, and `ui_world_test.dart` also reads text and buttons from a version 4 scene. Add to them when you touch a saved format.
+**The saved formats.** `test/screens/ui_document_test.dart` pins the screen file (canvas first, parents by name, no ids, no `visible`, a newer format refused), `ui_screen_manifest_test.dart` the screen list, and `test/editor/project/ui_scene_extractor_test.dart` the extractor that takes screens out of an old scene. `test/text/`, `test/bindings/`, `test/theme/` and `test/world/ui_world_test.dart` check that text styles, actions, themes, text and buttons survive a save, and `ui_world_test.dart` also reads text and buttons from a version 4 scene. `test/serialization/ui_migrations_test.dart` reads scenes and screens saved before the renames. Add to them when you touch a saved format.
 
-**Writing tests.** Each file makes its worlds with a small helper, `World()..context.install(JustGameUi.extension)`, as a game's engine does. `UiBindings`, `UiActions` and `UiWidgets` are process-wide registries, and `UiThemes` and `UiFonts` keep what they loaded, so clear what your test touches in `setUp` or `tearDown`: `UiBindings.clear()`, `UiActions.clear()`, `UiWidgets.clear()`, `UiThemes.reset()`, `UiFonts.reset()`. An editor test that needs files writes a small project into `Directory.systemTemp.createTempSync(...)` and hands it to `UiProject` or `UiEditorModule(root:)`. Drive widgets as a person would: tap, drag, type and press keys. `test/editor/ui_workspace_test.dart` drags on a 1920×1080 design shrunk onto a phone, where a drag that forgets the scale shows at once.
+**Writing tests.** The registries are per engine context, so a test needs no clean-up: a world made with `uiWorld()` (`test/support/ui_test_support.dart`) has a context of its own, and `uiWorld(context)` shares one between a test's worlds; register on that context (`UiBindings.of(context)`). A test that runs a whole `Engine` registers on `engine.context`. An editor test that needs files writes a small project into `Directory.systemTemp.createTempSync(...)` and hands it to `UiProject` or `UiEditorModule(root:)`. Drive widgets as a person would: tap, drag, type and press keys. `test/editor/ui_editor_workspace_test.dart` drags on a 1920×1080 design shrunk onto a phone, where a drag that forgets the scale shows at once.
 
 ---
 
 ## Coding Guidelines
 
-- **Formatting.** Code is formatted with `dart format`. Format the files you change, for example `dart format lib/src/runtime/layer/ui_layer.dart test/ui_screen_test.dart`.
+- **Formatting.** Code is formatted with `dart format`. Format the files you change, for example `dart format lib/src/screens/ui_layer.dart test/screens/ui_layer_test.dart`. The whole package is format-clean.
 - **Analysis.** `flutter analyze` must report no issues at all: no errors, warnings or infos. The rules are in `analysis_options.yaml`: `flutter_lints`.
-- **The runtime and editor split.** Code a game needs goes under `lib/src/runtime/` and is exported through `lib/just_ui_editor.dart`. Editor code goes under `lib/src/editor/` and is exported through `lib/editor.dart`. If you rename `UiEditorModule` or `JustGameUi.extension`, or put editor code anywhere else, update `just_store.json`, and keep its `version` equal to the one in `pubspec.yaml`. This must print nothing:
-
-  ```bash
-  grep -rnE "^(import|export) .*(just_game_engine_editor|/editor\.dart|editor/|dart:(io|html))" lib/just_ui_editor.dart lib/src/runtime
-  ```
-
-- **Web and WebAssembly.** The runtime runs on every Flutter platform, including web builds compiled to JavaScript and to WebAssembly. Nothing under `lib/src/runtime/` may import `dart:io` or `dart:html`; the command above checks that too. The editor reads and writes files with `dart:io`.
+- **The runtime and editor split.** Code a game needs goes in a runtime feature folder and is exported through its barrel and `lib/just_ui_editor.dart`. Editor code goes under `lib/src/editor/` and is exported through `src/editor/editor.dart` and `lib/editor.dart`. If you rename `UiEditorModule` or `JustGameUi.extension`, or put editor code anywhere else, update `just_store.json`, and keep its `version` and `requires` equal to `pubspec.yaml`'s. `test/library_layout_test.dart` checks all of this.
+- **Web and WebAssembly.** The runtime runs on every Flutter platform, including web builds compiled to JavaScript and to WebAssembly. Nothing outside `lib/src/editor/` may import `dart:io` or `dart:html`; the layout test checks that too. The editor reads and writes files through `just_editor_core/io.dart`.
 - **Words.** Text the player or designer sees uses British spelling ("colour") and sentence case. Identifiers follow Flutter (`colorRole`), and saved names, such as the `[color=…]` tag, stay as they are.
 - **Documentation.** Give every public API you add a `///` doc comment. Describe user-visible changes in [CHANGELOG.md](CHANGELOG.md), and update [README.md](README.md) if the public API or a saved file changes.
 - **Tests.** Add or update tests for any behaviour you change. A bug fix comes with a test that fails without it.
 - **Dependencies.** Do not add a dependency without discussing it in an issue first. One the runtime imports ships in every game.
-- **Structure.** Match the existing folders under `lib/src/`. Games and other packages import `lib/just_ui_editor.dart` and `lib/editor.dart`, not files under `lib/src/`.
+- **Structure.** A file goes in the feature it belongs to and is named after its main class; a new top-level folder takes a layer in `test/library_layout_test.dart`. Games and other packages import `lib/just_ui_editor.dart` and `lib/editor.dart`, not files under `lib/src/`.
 
 ---
 
@@ -194,7 +186,6 @@ flutter test test/ui_screens_test.dart
    dart format <the files you changed>
    flutter analyze
    flutter test
-   grep -rnE "^(import|export) .*(just_game_engine_editor|/editor\.dart|editor/|dart:(io|html))" lib/just_ui_editor.dart lib/src/runtime
    ```
 4. Commit with a [conventional commit message](#commit-message-convention).
 5. Push to your fork and open a pull request against `main`. Say what changed and why. List any unpublished dependency version it needs, any change to a saved format or to `just_store.json`, and what a game will need to change. For a change you can see in the editor or on a screen, add before and after screenshots.
@@ -222,12 +213,12 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 | `test` | Adding or updating tests |
 | `chore` | Build process, tooling, dependencies |
 
-Use the area as the scope. For the runtime, that is its folder under `lib/src/runtime/`: `text`, `theme`, `logic`, `layer`, `components`, `systems`, `serialization` or `screens`. For anything under `lib/src/editor/`, use `editor`. Mark a change that breaks the public API or a saved format with `!` and a `BREAKING CHANGE:` footer.
+Use the area as the scope. For the runtime, that is its feature folder under `lib/src/`: `text`, `bindings`, `theme`, `layout`, `controls`, `world`, `serialization` or `screens`. For anything under `lib/src/editor/`, use `editor`. Mark a change that breaks the public API or a saved format with `!` and a `BREAKING CHANGE:` footer.
 
 **Examples:**
 ```
-fix(layer): keep a hidden element from taking room in a row
-feat(logic): add an audio.stop built-in action
+fix(screens): keep a hidden element from taking room in a row
+feat(bindings): add an audio.stop built-in action
 fix(editor): make one drag one undo step at any zoom
 docs(contributing): explain the runtime and editor split
 ```

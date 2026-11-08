@@ -4,10 +4,9 @@ library;
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/just_editor_core.dart';
 
-import '../../runtime/components/screen/ui_canvas_component.dart';
-import '../../runtime/just_game_ui.dart';
-import '../../runtime/screens/ui_document.dart';
-import '../../runtime/systems/ui_system.dart';
+import '../../controls/controls.dart';
+import '../../layout/layout.dart';
+import '../../screens/screens.dart';
 
 /// A `.ui.json` being edited: built into a world of its own, with its own
 /// selection and its own history.
@@ -86,7 +85,7 @@ class UiScreenDocument {
     ..context.install(JustGameUi.extension)
     ..initialize()
     // Text that types itself out, bindings re-read — in the preview.
-    ..addSystem(UiSystem());
+    ..addSystem(UiTextSystem());
 
   /// Where it is saved.
   String path;

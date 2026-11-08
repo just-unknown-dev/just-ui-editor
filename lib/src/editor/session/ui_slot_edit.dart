@@ -4,10 +4,12 @@ library;
 import 'package:flutter/painting.dart';
 import 'package:just_game_engine/just_game_engine.dart';
 import 'package:just_editor_core/just_editor_core.dart';
+import 'package:meta/meta.dart';
 
-import '../../runtime/components/screen/ui_slot_component.dart';
+import '../../layout/layout.dart';
 
 /// Everything about where an element sits that a drag can change.
+@internal
 class UiSlotState {
   const UiSlotState({
     required this.mode,
@@ -84,6 +86,7 @@ class UiSlotState {
 /// A drag records one of these when it ends (`EditorHistory.pushApplied`);
 /// arrow-key nudges push one per press, and consecutive ones for the same
 /// elements with the same label merge.
+@internal
 class UiSlotEditCommand extends EditorCommand {
   UiSlotEditCommand({
     required this.label,
@@ -150,6 +153,7 @@ class UiSlotEditCommand extends EditorCommand {
 
 /// The slots of [entities] as they are now, by entity; an entity with no
 /// slot is left out.
+@internal
 Map<Entity, UiSlotState> slotsOf(Iterable<Entity> entities) => {
   for (final e in entities)
     if (e.getComponent<UiSlotComponent>() case final slot?)
